@@ -70,17 +70,9 @@ document.getElementById('reset-button').addEventListener('click', async () => {
     }
 });
 
-// Added: Helper function to render chat history
-function renderChatHistory(chatHistoryElement) {
-    if (!chatHistoryElement) return;
-    chatHistoryElement.innerHTML = chatMessages
-        .map(msg => `<p class="${msg.type === 'ai' ? 'bot-message' : (msg.type === 'human' ? 'user-message' : 'system-message')}"><strong>${msg.type === 'ai' ? 'AI' : (msg.type === 'human' ? 'User' : 'System')}:</strong> ${escapeHTML(msg.content)}</p>`)
-        .join('');
-    chatHistoryElement.scrollTop = chatHistoryElement.scrollHeight; // Auto-scroll to bottom
-}
-
 // Added: Helper function to escape HTML to prevent XSS
 function escapeHTML(str) {
+    if (typeof str !== 'string') str = String(str); // Ensure str is a string
     return str.replace(/[&<>'"/]/g, function (match) {
         return {
             '&': '&amp;',
@@ -91,5 +83,23 @@ function escapeHTML(str) {
             '/': '&#x2F;'
         }[match];
     });
+}
+
+// Added: Helper function to format message content (bold and preserve newlines via CSS)
+function formatMessageContent(text) {
+    let escapedText = escapeHTML(text);
+    // Replace escaped double asterisks with <strong> tags for bolding
+    // Example: **text** becomes <strong>text</strong> after text itself has been escaped.
+    escapedText = escapedText.replace(/&ast;&ast;(.*?)&ast;&ast;/g, '<strong>$1</strong>');
+    return escapedText;
+}
+
+// Added: Helper function to render chat history
+function renderChatHistory(chatHistoryElement) {
+    if (!chatHistoryElement) return;
+    chatHistoryElement.innerHTML = chatMessages
+        .map(msg => `<p class="${msg.type === 'ai' ? 'bot-message' : (msg.type === 'human' ? 'user-message' : 'system-message')}"><strong>${msg.type === 'ai' ? 'AI' : (msg.type === 'human' ? 'User' : 'System')}:</strong> ${formatMessageContent(msg.content)}</p>`)
+        .join('');
+    chatHistoryElement.scrollTop = chatHistoryElement.scrollHeight; // Auto-scroll to bottom
 }
   

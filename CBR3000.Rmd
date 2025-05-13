@@ -1,0 +1,143 @@
+---
+title: "3000m CBR skating"
+author: "Martijn Willemsen"
+date: "2025-03-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(FNN)
+
+predict_pb <- function (q, cb, ft_range=500, age_range=5, adjust=FALSE, npb = TRUE, pb500 = FALSE, pb1000 = FALSE, pb1500=FALSE, sameTrack=FALSE, noCases=10)
+{
+  #ft_range filter on finish time (100=1 sec)
+  #age_range filter on age (years)
+  #adjust: track correction 
+  #npb: use non-personal best on this distance
+  #pb500 use personal best on 500
+  #pb1000 yse personal best on 1000
+  #pb 1500 use personal best on 1500
+  # only use races on the same track
+  # noCases: how many similar cases to find
+  #get gender from query
+  q_gender=q$Gender_n;
+  q_track=q$Track_n;
+  # filter cases based on input vars
+  cases<-filter(cb, Gender_n==q_gender & PersonID!=q$PersonID)
+  if (age_range>0) {cases<-filter(cases, age_perf_p<q$age_perf_n+age_range & age_perf_p>q$age_perf_n-age_range)}
+  if (ft_range>0) {cases<-filter(cases, endtime_n<q$endtime_n+ft_range & endtime_n>q$endtime_n - ft_range)}
+  if (sameTrack) {cases<-filter(cases, Track_n==q_track)}
+  a<-ifelse(adjust, "^a", "^")
+  p500 <- ifelse(pb500, paste(a,"r_500_.?_n|",sep = ""), "")  
+  p1000 <- ifelse(pb1000, paste(a,"r_1000_.?_n|",sep = ""), "")  
+  p1500 <- ifelse(pb1500, paste(a,"r_1500_.?_n|",sep = ""), "")  
+  np <-ifelse(npb, paste(a,"r_.?_n|",sep = ""),"")
+  regStr = paste(p500, p1000, p1500, np, sep="")
+  regStr= substr(regStr, 1, nchar(regStr)-1)
+  #filter out duplicate cases (esp. for predictions with npb=F we have many )
+  # this does not cover duplicate cases if one skater has two similar races like the query case (when npb=true)
+  cases<-cases %>% select(matches(regStr), PersonID, matches(".*_p"),endtime_n,Track_n, -age_perf_n) %>% distinct()
+  #write.csv(cases, "test.csv")
+  nk=min(noCases, nrow(cases))
+  # generate y
+  if (adjust) {y=cases$aendtime_p} else {y=cases$endtime_p}
+  #generate X cases
+  X=select(cases,matches(regStr))
+  #generate prediction case
+  X.t = select(q,matches(regStr))
+  #predict endtime
+  knn=knn.reg(X,X.t,y ,k=nk)
+  if (adjust) {pred = trkcor[q$Track_p]*knn$pred} else {pred=knn$pred}
+  
+  # get indexes of similar cases for pace prediction
+  nni<-get.knnx(X,X.t,k=nk)
+  # retrieve their full case
+  nn <-cases %>% filter(row_number() %in% nni$nn.index )
+  #calculate relative paces of personal best for pace prediction
+  rel_paces = colMeans(select(nn,matches("^dr.?_p")))
+  #calculate absolute pace prediction
+  pred_pb_paces = rel_paces*(pred/7.5)
+  cases_p<-select(nn,matches("^r_.?_p"))
+  cases_n<-select(nn,matches(regStr),endtime_n,Track_n)
+  #return prediction and similar cases
+  return(list(c(nk, pred, pred_pb_paces),cbind(select(nn, age_perf_p, Track_p,endtime_p),cases_p),cases_n))
+  
+}
+```
+
+## Load
+
+load the 3000m data and create cases from PB and non-PB
+
+```{r load data and case base}
+m3000<-read_csv("3kmn.csv") 
+trkcor<-read_csv("trackcor.csv")
+#calculate trkcor vector
+trkcor<-unlist(select(filter(read_csv("trackcor.csv"),distance==3000),-distance))
+
+#create case-base
+pbs<-filter(m3000, pb)
+cb=inner_join(pbs,filter(m3000, !pb),  by="PersonID", suffix=c("_p", "_n"))
+
+```
+
+## Select skater
+
+Take a 'famous'skater
+
+```{r pressure, echo=FALSE}
+sk<-"Martijn Willemsen"
+#sample one randomly
+q<-filter(cb, Name_p==sk) %>% sample_n(1)
+q
+#take top one
+q2<-filter(cb, Name_p==sk) %>% slice(1)
+q2
+```
+
+## make predictions
+
+for both queries
+
+```{r pressure, echo=FALSE}
+fullpred1<-predict_pb(q,cb, adjust=T, age_range=5, sameTrack=F, npb=T, pb1000=T,  pb500=T, noCases=10)
+#predicted time
+fullpred1[[1]]
+#personal bests of cases used for prediction
+fullpred1[[2]]
+#npbs of cases for all distances
+fullpred1[[3]]
+
+fullpred2<-predict_pb(q2,cb, adjust=F, age_range=5,sameTrack=F, npb=T, pb1000=T,  pb500=T, noCases=10)
+
+
+```
+#plot the two predictions
+plot the prediction in the set of cases for q
+```{r}
+#add case number to cases
+fullpred1[[2]]$case=row.names(fullpred1[[2]])
+#add prediction as case 0
+fullpred1[[2]]<-rbind(fullpred1[[2]],as.vector(c(q$age_perf_p, q$Track_p, round(fullpred1[[1]][2:10],0),0)))
+#plot
+udatag<-gather(fullpred1[[2]],key="roundstr",value="time",r_0_p, r_1_p, r_2_p, r_3_p, r_4_p, r_5_p, r_6_p, r_7_p)
+udatag$round=as.numeric(substr(as.character(udatag$roundstr),3,3))
+udatag$time=as.numeric(udatag$time)
+ggplot(filter(udatag,case!=0))+geom_line(aes(y=time,x=round, group=case), color="grey")+geom_line(data=filter(udatag,case==0),aes(y=time,x=round, color=case), size=2)+ylab("rondetijd (s)")+xlab("ronde")+ theme(legend.position = c(0.8, 0.4))+ guides(color=guide_legend(title="PB 3000m voor case")) + scale_color_brewer(palette = "Set3", drop=F)
+```
+plot for q2
+```{r}
+#add case number to cases
+fullpred2[[2]]$case=row.names(fullpred2[[2]])
+#add prediction as case 0
+fullpred2[[2]]<-rbind(fullpred2[[2]],as.vector(c(q2$age_perf_p, q2$Track_p, round(fullpred2[[1]][2:10],0),0)))
+#plot
+udatag<-gather(fullpred2[[2]],key="roundstr",value="time",r_0_p, r_1_p, r_2_p, r_3_p, r_4_p, r_5_p, r_6_p, r_7_p)
+udatag$round=as.numeric(substr(as.character(udatag$roundstr),3,3))
+udatag$time=as.numeric(udatag$time)
+ggplot(filter(udatag,case!=0))+geom_line(aes(y=time,x=round, group=case), color="grey")+geom_line(data=filter(udatag,case==0),aes(y=time,x=round, color=case), size=2)+ylab("rondetijd (s)")+xlab("ronde")+ theme(legend.position = c(0.8, 0.4))+ guides(color=guide_legend(title="PB 3000m voor case")) + scale_color_brewer(palette = "Set3", drop=F)
+
+```
+

@@ -97,6 +97,7 @@ button#reset-button:hover {
     line-height: 1.4;
     max-width: 75%; /* Max width of a bubble */
     word-wrap: break-word; /* Ensure long words don't overflow */
+    white-space: pre-wrap; /* Added to preserve newlines for lists */
     /* border-radius: 5px; Will be more specific below */
 }
 

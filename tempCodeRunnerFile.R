@@ -75,6 +75,7 @@ i<-getID("Tim de Lange")
 i
 #get races from this person (pick the first in the list) for a particular season
 dt<-getAllRaces(i$id[1], season="ALL")
+print(dt)
 # get lap times from the link in the race data 
 # this function produces a warning but seems to work
 getLaps(dt$link[1])
