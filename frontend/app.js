@@ -88,9 +88,9 @@ function escapeHTML(str) {
 // Added: Helper function to format message content (bold and preserve newlines via CSS)
 function formatMessageContent(text) {
     let escapedText = escapeHTML(text);
-    // Replace escaped double asterisks with <strong> tags for bolding
-    // Example: **text** becomes <strong>text</strong> after text itself has been escaped.
-    escapedText = escapedText.replace(/&ast;&ast;(.*?)&ast;&ast;/g, '<strong>$1</strong>');
+    // Replace literal double asterisks with <strong> tags for bolding.
+    // The content ($1) has already been through escapeHTML.
+    escapedText = escapedText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     return escapedText;
 }
 
