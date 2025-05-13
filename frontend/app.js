@@ -74,7 +74,7 @@ document.getElementById('reset-button').addEventListener('click', async () => {
 function renderChatHistory(chatHistoryElement) {
     if (!chatHistoryElement) return;
     chatHistoryElement.innerHTML = chatMessages
-        .map(msg => `<p><strong>${msg.type === 'ai' ? 'AI' : (msg.type === 'human' ? 'User' : 'System')}:</strong> ${escapeHTML(msg.content)}</p>`)
+        .map(msg => `<p class="${msg.type === 'ai' ? 'bot-message' : (msg.type === 'human' ? 'user-message' : 'system-message')}"><strong>${msg.type === 'ai' ? 'AI' : (msg.type === 'human' ? 'User' : 'System')}:</strong> ${escapeHTML(msg.content)}</p>`)
         .join('');
     chatHistoryElement.scrollTop = chatHistoryElement.scrollHeight; // Auto-scroll to bottom
 }

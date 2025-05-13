@@ -81,32 +81,68 @@ button#reset-button:hover {
     flex-grow: 1; /* Allow chat history to take available space */
     overflow-y: auto; /* Add scroll for overflow */
     padding: 15px;
-    background: rgba(240, 240, 240, 0.7); /* Slightly transparent light background */
+    /* background: rgba(240, 240, 240, 0.7); Removed, bubbles will have own background */
     border-radius: 6px;
     margin-bottom: 20px; /* Space before input area */
-    border: 1px solid #e0e0e0;
+    /* border: 1px solid #e0e0e0; Removed, no border for the container needed */
     min-height: 150px; /* Minimum height */
+    display: flex; /* Added: to allow flex-direction column */
+    flex-direction: column; /* Added: to stack messages */
+    gap: 10px; /* Added: Space between messages */
 }
 
-#chat-history .message {
-    padding: 10px;
-    margin-bottom: 10px;
-    border-radius: 5px;
+#chat-history p { /* Changed from .message to p, as app.js uses <p> */
+    padding: 10px 15px;
+    margin-bottom: 0; /* Removed default p margin, using gap in container */
     line-height: 1.4;
+    max-width: 75%; /* Max width of a bubble */
+    word-wrap: break-word; /* Ensure long words don't overflow */
+    /* border-radius: 5px; Will be more specific below */
 }
+
+#chat-history p strong { /* Hide the User:/AI: prefix */
+    display: none;
+}
+
+/* Common bubble styles */
+#chat-history p {
+    border-radius: 18px; /* Bubbly radius */
+}
+
+/* User message bubble */
+#chat-history p:nth-child(odd) { /* Assuming user messages are always the odd ones if history starts with user */
+    /* This selector is a bit fragile if chat history can start with AI or have system messages.
+       app.js adds a class based on msg.type (human/ai). We should use that if possible.
+       For now, let's assume User messages are rendered first, or we need to update app.js to add classes.
+       If app.js adds classes .user-message and .ai-message to the <p> tags, that would be much better.
+       Let's target based on content for now, this is not ideal but works with current app.js output. */
+    /* A better approach would be to modify app.js to add classes to the <p> tags. */
+    /* For now, we will use the previous .user-message and .bot-message and assume app.js will be updated */
+}
+
+/* AI message bubble */
+#chat-history p:nth-child(even) {
+    /* See comment above. */
+}
+
+/* Let's re-introduce .user-message and .bot-message based on the earlier CSS, 
+   and assume app.js will be modified to add these classes to the <p> tags. 
+   This is a more robust way to style them. */
 
 #chat-history .user-message {
-    background-color: #d1e7dd; /* Light green for user messages */
-    text-align: right;
-    margin-left: auto; /* Align to right */
-    max-width: 70%;
+    background-color: #007bff; /* Blue for user messages */
+    color: white;
+    text-align: left; /* Text inside bubble left-aligned */
+    margin-left: auto; /* Align bubble to right */
+    border-radius: 18px 18px 5px 18px; /* Bubbly, with one corner less rounded */
 }
 
 #chat-history .bot-message {
-    background-color: #f8d7da; /* Light red for bot messages */
+    background-color: #e9ecef; /* Light grey for bot messages */
+    color: #333;
     text-align: left;
-    margin-right: auto; /* Align to left */
-    max-width: 70%;
+    margin-right: auto; /* Align bubble to left */
+    border-radius: 18px 18px 18px 5px; /* Bubbly, with one corner less rounded */
 }
 
 #chat-history .message pre { /* Style for preformatted text within messages */
