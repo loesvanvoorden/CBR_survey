@@ -92,9 +92,9 @@ button#reset-button:hover {
 }
 
 #chat-history p { /* Changed from .message to p, as app.js uses <p> */
-    padding: 10px 15px;
+    padding: 12px 18px; /* Increased padding */
     margin-bottom: 0; /* Removed default p margin, using gap in container */
-    line-height: 1.4;
+    line-height: 1.5; /* Slightly increased line height */
     max-width: 75%; /* Max width of a bubble */
     word-wrap: break-word; /* Ensure long words don't overflow */
     white-space: pre-wrap; /* Added to preserve newlines for lists */
@@ -135,7 +135,7 @@ button#reset-button:hover {
     color: white;
     text-align: left; /* Text inside bubble left-aligned */
     margin-left: auto; /* Align bubble to right */
-    border-radius: 18px 18px 5px 18px; /* Bubbly, with one corner less rounded */
+    border-radius: 20px 20px 5px 20px; /* Adjusted bubbly, with one corner less rounded */
 }
 
 #chat-history .bot-message {
@@ -143,7 +143,7 @@ button#reset-button:hover {
     color: #333;
     text-align: left;
     margin-right: auto; /* Align bubble to left */
-    border-radius: 18px 18px 18px 5px; /* Bubbly, with one corner less rounded */
+    border-radius: 20px 20px 20px 5px; /* Adjusted bubbly, with one corner less rounded */
 }
 
 #chat-history .message pre { /* Style for preformatted text within messages */
