@@ -98,7 +98,7 @@ function formatMessageContent(text) {
 function renderChatHistory(chatHistoryElement) {
     if (!chatHistoryElement) return;
     chatHistoryElement.innerHTML = chatMessages
-        .map(msg => `<p class="${msg.type === 'ai' ? 'bot-message' : (msg.type === 'human' ? 'user-message' : 'system-message')}"><strong>${msg.type === 'ai' ? 'AI' : (msg.type === 'human' ? 'User' : 'System')}:</strong> ${formatMessageContent(msg.content)}</p>`)
+        .map(msg => `<p class="${msg.type === 'ai' ? 'bot-message' : (msg.type === 'human' ? 'user-message' : 'system-message')}"><strong class="chat-role-prefix">${msg.type === 'ai' ? 'AI' : (msg.type === 'human' ? 'User' : 'System')}:</strong> ${formatMessageContent(msg.content)}</p>`)
         .join('');
     chatHistoryElement.scrollTop = chatHistoryElement.scrollHeight; // Auto-scroll to bottom
 }

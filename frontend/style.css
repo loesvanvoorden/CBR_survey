@@ -101,7 +101,7 @@ button#reset-button:hover {
     /* border-radius: 5px; Will be more specific below */
 }
 
-#chat-history p strong { /* Hide the User:/AI: prefix */
+#chat-history p strong.chat-role-prefix { /* Hide the User:/AI: prefix specifically */
     display: none;
 }
 
