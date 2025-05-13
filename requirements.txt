@@ -1,0 +1,21 @@
+# Core web framework
+fastapi
+uvicorn[standard]
+
+# LangChain and tools
+langchain
+langchain-community
+openai
+pydantic
+sqlalchemy
+psycopg2-binary # PostgreSQL driver, recommended for Railway deployment
+
+# For using LangChain tools with local CSV/SQL and OpenAI-compatible models
+pandas
+tqdm
+
+# Optional (only if you're using HuggingFace tools or local embeddings later)
+# sentence-transformers
+
+# SQLite3 is included with Python, no need to install
+load_dotenv
