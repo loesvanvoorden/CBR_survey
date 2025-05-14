@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from backend.db import save_conversation
 from backend.prompt_templates import custom_prompt
 from backend.preprocessing import load_json_data, load_csv_data
@@ -9,7 +9,7 @@ from langchain.tools import tool
 from langchain.callbacks import get_openai_callback
 import os
 import json
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from langchain_core.messages import HumanMessage, AIMessage
 
 # Load environment variables
@@ -130,6 +130,39 @@ class UserQuery(BaseModel):
     language: str
     chat_history: Optional[List[Dict[str, str]]] = None
 
+# --- New Pydantic models for Shiny data ---
+class SkaterRaceDataItem(BaseModel):
+    # These fields are based on typical columns in the 'races' dataframe in Shiny.
+    # Adjust them to accurately reflect the structure of `data_for_tool_payload` items.
+    # Using Optional for all fields to be flexible.
+    id: Optional[str] = None
+    date: Optional[str] = None
+    track: Optional[str] = None
+    distance: Optional[int] = None
+    time: Optional[str] = None # Original time string e.g., "4:05.67"
+    note: Optional[str] = None
+    season: Optional[str] = None
+    cat: Optional[str] = None
+    link: Optional[str] = None
+    endtime: Optional[float] = None # Time in seconds or centiseconds, ensure consistency
+    # lastSeason: Optional[str] = None # If you send this
+    SB: Optional[int] = None # 0 or 1
+    PB: Optional[int] = None # 0 or 1
+    # curSB: Optional[int] = None # If you send this
+    # prevSB: Optional[int] = None # If you send this
+    flag: Optional[str] = None # e.g., "PB", "SB", "PB SB"
+    # Add any other fields that are present in each item of the racesData list
+
+class ShinyEventPayload(BaseModel):
+    timestamp: str
+    sessionId: str
+    eventType: str
+    skaterId: str
+    selectedSkaterName: str
+    racesData: List[SkaterRaceDataItem] # Expect a list of the structure defined above
+
+# --- End of new Pydantic models ---
+
 @router.post("/ask")
 async def ask_question(query: UserQuery):
     """
@@ -202,3 +235,33 @@ async def reset_conversation():
     Client should handle clearing its local history.
     """
     return {"message": "Chat reset. Please clear chat history on your client."}
+
+# --- New Endpoint to receive data from R Shiny app ---
+@router.post("/receive_shiny_data")
+async def receive_shiny_data(payload: ShinyEventPayload):
+    print(f"Received event: {payload.eventType} from Shiny for session: {payload.sessionId}")
+    print(f"Skater ID: {payload.skaterId}, Name: {payload.selectedSkaterName}")
+    print(f"Timestamp: {payload.timestamp}")
+    
+    if payload.racesData:
+        print(f"Received {len(payload.racesData)} race(s):")
+        for i, race in enumerate(payload.racesData):
+            print(f"  Race {i+1}:")
+            # Print a few key details from the race Pydantic model
+            print(f"    Date: {race.date}, Track: {race.track}, Time: {race.time}, Endtime (numeric): {race.endtime}, Flag: {race.flag}")
+    else:
+        print("No race data in this payload.")
+
+    # TODO: Implement your logic here to process/store the received data.
+    # For example, you might want to:
+    # 1. Store `payload.racesData` associated with `payload.sessionId` in a database or cache.
+    # 2. If your frontend uses WebSockets, you could emit an event to the client with `payload.sessionId`.
+    # 3. Trigger other backend processes based on this new data.
+
+    # How to make this data available to "a user that is on the same browser or laptop":
+    # - If the user interacts with this Python backend (e.g., via its /ask endpoint or another UI it serves),
+    #   that interaction will have the same `payload.sessionId`.
+    # - Your other endpoints (e.g., /ask or a new one for fetching user-specific data)
+    #   can then retrieve the stored skater data using this sessionId.
+
+    return {"message": "Data received successfully from Shiny", "sessionId": payload.sessionId, "skaterId": payload.skaterId}
