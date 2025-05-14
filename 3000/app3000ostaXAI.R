@@ -16,7 +16,7 @@ candidates<-data.frame()
 
 # --- Placeholder for External Tool API --- 
 # !!! REPLACE THIS WITH YOUR ACTUAL ENDPOINT !!!
-EXTERNAL_TOOL_API_ENDPOINT <- "http://localhost:YOUR_TOOL_PORT/api/shiny_event" 
+EXTERNAL_TOOL_API_ENDPOINT <- "https://web-production-13585.up.railway.app/receive_shiny_data" 
 
 source("utils.R") # Assuming utils.R is in the same directory and contains getAllRaces, getLaps, predict_pb
 
