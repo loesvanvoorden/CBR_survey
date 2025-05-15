@@ -14,6 +14,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 import httpx
 import pandas as pd
 import sqlite3 # Added for DB access
+import psycopg2 # For PostgreSQL
+from psycopg2.extras import RealDictCursor # To get results as dictionaries
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -43,10 +45,18 @@ except Exception as e:
     print(f"Warning: Could not load trackcor.csv: {e}. Python-side track adjustments will not work.")
 # --- End trackcor.csv loading ---
 
-# --- Database path ---
-# Assuming api.py is in backend/, and data/ is at the project root.
-# Adjust if your project structure is different.
-DATABASE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "skater_activity.db")
+# --- Database path --- OLD SQLITE
+# DATABASE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "skater_activity.db") 
+
+# NEW PostgreSQL connection details from Railway Environment Variables
+DATABASE_URL_STR = os.getenv("DATABASE_URL") # Railway provides this
+
+# Fallback to individual components if DATABASE_URL is not set (less likely on Railway but good for local dev)
+DB_HOST = os.getenv("PGHOST") 
+DB_PORT = os.getenv("PGPORT", "5432")
+DB_NAME = os.getenv("PGDATABASE")
+DB_USER = os.getenv("PGUSER")
+DB_PASSWORD = os.getenv("PGPASSWORD")
 
 # Define tools
 
@@ -269,97 +279,96 @@ async def get_skater_prediction_from_r(
 def get_saved_prediction_for_skater(skater_name: str) -> dict:
     """
     Retrieves the latest saved prediction for a specific athlete by name
-    from the `skater_activity.db` database. This database is populated by the R Shiny app.
+    from the PostgreSQL database. This database is populated by the R Shiny app.
     """
+    conn = None
+    
+    if not DATABASE_URL_STR and not all([DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]):
+        return {"error": "Database connection environment variables (DATABASE_URL or PGHOST, PGDATABASE, etc.) not set for Python API."}
+    
     try:
-        if not os.path.exists(DATABASE_PATH):
-            return {"error": f"Database not found at {DATABASE_PATH}. Please ensure the R Shiny app has run and created it."}
+        if DATABASE_URL_STR:
+            conn = psycopg2.connect(DATABASE_URL_STR)
+            # print("Connected to PostgreSQL using DATABASE_URL") # For debugging
+        else: # Fallback to component variables
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                dbname=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD
+            )
+            # print("Connected to PostgreSQL using component variables") # For debugging
+        
+        cursor = conn.cursor(cursor_factory=RealDictCursor) 
 
-        conn = sqlite3.connect(DATABASE_PATH)
-        # To make it return dictionaries directly for rows
-        conn.row_factory = sqlite3.Row 
-        cursor = conn.cursor()
-
-        # Normalize skater_name for lookup, assuming names in DB might have varied casing
-        # However, the R app saves `skater_name_at_prediction` directly from `candidates$Naam`
-        # So, a case-sensitive match might be intended. Let's try an exact match first.
-        # For more robust matching, consider LOWER() on both sides if needed.
         cursor.execute("""
             SELECT prediction_output_json, input_parameters_json, prediction_timestamp 
             FROM saved_skater_predictions 
-            WHERE skater_name_at_prediction = ? 
+            WHERE skater_name_at_prediction = %s 
             ORDER BY prediction_timestamp DESC 
             LIMIT 1
         """, (skater_name,))
         
         row = cursor.fetchone()
-        conn.close()
+        cursor.close()
 
         if row:
-            prediction_output_json_str = row["prediction_output_json"]
-            input_parameters_json_str = row["input_parameters_json"]
+            prediction_data = row["prediction_output_json"] 
+            input_params_data = row["input_parameters_json"]
             prediction_timestamp = row["prediction_timestamp"]
 
-            if prediction_output_json_str:
-                prediction_data = json.loads(prediction_output_json_str)
-                
-                input_params_data = {}
-                if input_parameters_json_str:
-                    try:
-                        input_params_data = json.loads(input_parameters_json_str)
-                    except json.JSONDecodeError:
-                        input_params_data = {"warning": "Could not parse input_parameters_json"}
+            if isinstance(prediction_data, str):
+                prediction_data = json.loads(prediction_data)
+            if isinstance(input_params_data, str):
+                input_params_data = json.loads(input_params_data) # Should be dict if from JSONB
+            
+            output_to_return = {
+                "retrieved_prediction_timestamp": prediction_timestamp.isoformat() if prediction_timestamp else None, 
+                "input_params_for_this_prediction": input_params_data if input_params_data else {},
+                "raw_prediction_from_db": prediction_data if prediction_data else {}
+            }
 
-                output_to_return = {
-                    "retrieved_prediction_timestamp": prediction_timestamp,
-                    "input_params_for_this_prediction": input_params_data, # Parsed input params
-                    "raw_prediction_from_db": prediction_data # Original prediction output structure
-                }
-
-                # Reconstruct display fields from prediction_data (as before)
-                if 'predicted_pb_summary' in prediction_data and prediction_data['predicted_pb_summary']:
-                    raw_pred_vector = prediction_data['predicted_pb_summary']
-
-                    if len(raw_pred_vector) >= 10: 
-                        predicted_time_cs = raw_pred_vector[1] 
-                        predicted_paces_cs = raw_pred_vector[2:10] 
-
-                        output_to_return["predicted_time"] = predicted_time_cs 
-                        output_to_return["predicted_paces"] = predicted_paces_cs
-
-                        predicted_time_sec = predicted_time_cs / 100
-                        minutes = int(predicted_time_sec // 60)
-                        seconds = predicted_time_sec % 60
-                        output_to_return["predicted_time_seconds"] = predicted_time_sec
-                        output_to_return["predicted_time_minutes"] = f"{minutes}m {seconds:.2f}s"
-
-                        predicted_paces_sec = [p / 100 for p in predicted_paces_cs]
-                        predicted_paces_minutes = [
-                            f"{int(ps // 60)}m {ps % 60:.2f}s" for ps in predicted_paces_sec
-                        ]
-                        output_to_return["predicted_paces_seconds"] = predicted_paces_sec
-                        output_to_return["predicted_paces_minutes"] = predicted_paces_minutes
-                    else:
-                        output_to_return["warning_prediction_structure"] = "Predicted PB summary from DB has unexpected structure."
-
-                if 'similar_cases_pb_details' in prediction_data:
-                    output_to_return["similar_cases"] = prediction_data['similar_cases_pb_details']
+            if prediction_data and 'predicted_pb_summary' in prediction_data and prediction_data['predicted_pb_summary']:
+                raw_pred_vector = prediction_data['predicted_pb_summary']
+                if len(raw_pred_vector) >= 10: 
+                    predicted_time_cs = raw_pred_vector[1] 
+                    predicted_paces_cs = raw_pred_vector[2:10] 
+                    output_to_return["predicted_time"] = predicted_time_cs 
+                    output_to_return["predicted_paces"] = predicted_paces_cs
+                    predicted_time_sec = predicted_time_cs / 100
+                    minutes = int(predicted_time_sec // 60)
+                    seconds = predicted_time_sec % 60
+                    output_to_return["predicted_time_seconds"] = predicted_time_sec
+                    output_to_return["predicted_time_minutes"] = f"{minutes}m {seconds:.2f}s"
+                    predicted_paces_sec = [p / 100 for p in predicted_paces_cs]
+                    predicted_paces_minutes = [
+                        f"{int(ps // 60)}m {ps % 60:.2f}s" for ps in predicted_paces_sec
+                    ]
+                    output_to_return["predicted_paces_seconds"] = predicted_paces_sec
+                    output_to_return["predicted_paces_minutes"] = predicted_paces_minutes
                 else:
-                    # Ensure similar_cases key exists even if empty, for consistent access by agent
-                    output_to_return["similar_cases"] = [] 
-                
-                return output_to_return
+                    output_to_return["warning_prediction_structure"] = "Predicted PB summary from DB has unexpected structure."
+
+            if prediction_data and 'similar_cases_pb_details' in prediction_data:
+                 output_to_return["similar_cases"] = prediction_data['similar_cases_pb_details']
             else:
-                return {"error": "Found record for skater, but prediction data is empty."}
+                output_to_return["similar_cases"] = [] 
+            
+            return output_to_return
         else:
             return {"message": f"No saved prediction found for '{skater_name}'. You can ask to generate one using the R model, or generate it in the R Shiny app first."}
 
-    except sqlite3.Error as e:
-        return {"error": f"Database error: {e}"}
-    except json.JSONDecodeError as e:
-        return {"error": f"Error decoding saved prediction JSON: {e}"}
+    except psycopg2.Error as e:
+        # Specific check for common Railway initial connection issue if tables not ready
+        if "relation \"saved_skater_predictions\" does not exist" in str(e).lower():
+             return {"message": f"The predictions table isn't ready yet in the database for skater '{skater_name}'. Please try generating a prediction in the R Shiny app first, then ask again in a few moments."}
+        return {"error": f"PostgreSQL Database error: {e}"}
     except Exception as e:
-        return {"error": f"An unexpected error occurred while fetching saved prediction: {str(e)}"}
+        return {"error": f"An unexpected error occurred: {str(e)}"}
+    finally:
+        if conn:
+            conn.close()
 
 @tool
 def get_lap_times(track: str, name: str) -> dict:

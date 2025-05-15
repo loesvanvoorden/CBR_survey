@@ -7,6 +7,8 @@ library(rvest)
 library(tidyverse)
 library(RColorBrewer)
 library(RSQLite)
+library(RPostgres)
+library(DBI) # RPostgres uses DBI
 
 # It's assumed utils.R is in the same directory or its path is correctly specified.
 # If app3000ostaXAI.R and utils.R are in different locations due to permission issues,
@@ -246,41 +248,104 @@ ui <- fluidPage(
 # Define server logic to summarize and view selected dataset ----
 server <- function(input, output,session) {
 
-# --- Database Setup for Logging Skater Selections ---
-db_path <- "../data/skater_activity.db" # Will be created in the app's working directory (e.g., 3000/)
-db <- dbConnect(RSQLite::SQLite(), db_path)
+# --- Database Setup for Logging Skater Selections & Predictions ---
 
-# Create table if it doesn't exist
-if (!dbExistsTable(db, "skater_selection_log")) {
-  dbExecute(db, "CREATE TABLE skater_selection_log (
-                  log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  timestamp TEXT NOT NULL,
-                  shiny_session_token TEXT NOT NULL,
-                  selected_skater_id TEXT NOT NULL
-                )")
-  dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_timestamp ON skater_selection_log (timestamp)")
-  dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_skater_id ON skater_selection_log (selected_skater_id)")
+# NEW PostgreSQL Connection using Railway Environment Variables
+database_url <- Sys.getenv("DATABASE_URL")
+db <- NULL
+
+if (database_url != "") {
+  tryCatch({
+    # Attempt to connect using the DATABASE_URL directly
+    # RPostgres::Postgres() doesn't directly take a DSN string in dbConnect like some other drivers.
+    # We need to parse it or rely on odbc/other packages if we want to use DSN directly.
+    # For RPostgres, it's often easier to stick to individual parameters if DATABASE_URL parsing is complex.
+    # However, if DATABASE_URL is a libpq connection string, dbConnect might handle some forms of it.
+    # Let's assume for now we might need to parse or use individual components as primary.
+    
+    # Fallback to individual components if direct DATABASE_URL is tricky or not fully supported by RPostgres dbConnect in a simple way
+    db_host <- Sys.getenv("PGHOST", unset = Sys.getenv("DB_HOST")) 
+    db_port <- as.integer(Sys.getenv("PGPORT", unset = Sys.getenv("DB_PORT", unset = 5432)))
+    db_name <- Sys.getenv("PGDATABASE", unset = Sys.getenv("DB_NAME")) 
+    db_user <- Sys.getenv("PGUSER", unset = Sys.getenv("DB_USER"))     
+    db_password <- Sys.getenv("PGPASSWORD", unset = Sys.getenv("DB_PASSWORD"))
+
+    if (any(sapply(list(db_host, db_name, db_user, db_password), function(x) x == "" || is.null(x)))) {
+      warning("Database environment variables (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) not fully set. App may not connect to PostgreSQL.")
+    } else {
+      db <- dbConnect(RPostgres::Postgres(),
+                      dbname = db_name,
+                      host = db_host,
+                      port = db_port,
+                      user = db_user,
+                      password = db_password)
+      print("Successfully connected to Railway PostgreSQL database using component variables.")
+    }
+  }, error = function(e) {
+    warning(paste("Failed to connect to Railway PostgreSQL database using component variables:", e$message))
+  })
+} else {
+    # Fallback to individual components if DATABASE_URL is not set
+    db_host <- Sys.getenv("PGHOST", unset = Sys.getenv("DB_HOST")) 
+    db_port <- as.integer(Sys.getenv("PGPORT", unset = Sys.getenv("DB_PORT", unset = 5432)))
+    db_name <- Sys.getenv("PGDATABASE", unset = Sys.getenv("DB_NAME")) 
+    db_user <- Sys.getenv("PGUSER", unset = Sys.getenv("DB_USER"))     
+    db_password <- Sys.getenv("PGPASSWORD", unset = Sys.getenv("DB_PASSWORD"))
+
+    if (any(sapply(list(db_host, db_name, db_user, db_password), function(x) x == "" || is.null(x)))) {
+      warning("DATABASE_URL not set, and other DB environment variables (PGHOST, etc.) also not fully set. App may not connect to PostgreSQL.")
+    } else {
+      tryCatch({
+        db <- dbConnect(RPostgres::Postgres(),
+                        dbname = db_name,
+                        host = db_host,
+                        port = db_port,
+                        user = db_user,
+                        password = db_password)
+        print("Successfully connected to Railway PostgreSQL database using component variables (DATABASE_URL was empty).")
+      }, error = function(e) {
+        warning(paste("Failed to connect to Railway PostgreSQL database using component variables (DATABASE_URL was empty):", e$message))
+      })
+    }
 }
 
-# Create saved_skater_predictions table if it doesn't exist
-if (!dbExistsTable(db, "saved_skater_predictions")) {
-  dbExecute(db, "CREATE TABLE saved_skater_predictions (
-                  prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  skater_osta_id TEXT NOT NULL,
-                  skater_name_at_prediction TEXT,
-                  prediction_timestamp TEXT NOT NULL,
-                  input_parameters_json TEXT,
-                  prediction_output_json TEXT,
-                  shiny_session_token TEXT
-                )")
-  dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_pred_skater_osta_id ON saved_skater_predictions (skater_osta_id)")
-  dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_pred_timestamp ON saved_skater_predictions (prediction_timestamp)")
+# Table Creation (SQL syntax is largely the same)
+# Ensure db is not NULL before proceeding
+if (!is.null(db)) {
+    if (!dbExistsTable(db, "skater_selection_log")) {
+      dbExecute(db, "CREATE TABLE skater_selection_log (
+                      log_id SERIAL PRIMARY KEY, # SERIAL is auto-incrementing in PostgreSQL
+                      timestamp TIMESTAMPTZ NOT NULL, # TIMESTAMPTZ for timestamp with timezone
+                      shiny_session_token TEXT NOT NULL,
+                      selected_skater_id TEXT NOT NULL
+                    )")
+      dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_timestamp ON skater_selection_log (timestamp)")
+      dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_skater_id ON skater_selection_log (selected_skater_id)")
+    }
+
+    if (!dbExistsTable(db, "saved_skater_predictions")) {
+      dbExecute(db, "CREATE TABLE saved_skater_predictions (
+                      prediction_id SERIAL PRIMARY KEY, # SERIAL for auto-increment
+                      skater_osta_id TEXT NOT NULL,
+                      skater_name_at_prediction TEXT,
+                      prediction_timestamp TIMESTAMPTZ NOT NULL, # TIMESTAMPTZ
+                      input_parameters_json JSONB, # JSONB is generally preferred over TEXT for JSON in PostgreSQL
+                      prediction_output_json JSONB, # JSONB
+                      shiny_session_token TEXT
+                    )")
+      dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_pred_skater_osta_id ON saved_skater_predictions (skater_osta_id)")
+      dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_pred_timestamp ON saved_skater_predictions (prediction_timestamp)")
+    }
+} else {
+    warning("Database connection is NULL. Tables will not be created.")
 }
 
 # Disconnect when the session ends
 session$onSessionEnded(function() {
-  dbDisconnect(db)
-  print("Disconnected from skater_activity.db")
+  if (!is.null(db)) {
+    dbDisconnect(db)
+    print("Disconnected from PostgreSQL database")
+  }
 })
 # --- End Database Setup ---
 

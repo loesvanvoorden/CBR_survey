@@ -19,3 +19,4 @@ tqdm
 
 # SQLite3 is included with Python, no need to install
 load_dotenv
+psycopg2-binary
