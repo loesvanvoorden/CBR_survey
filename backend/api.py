@@ -45,15 +45,9 @@ except Exception as e:
     print(f"Warning: Could not load trackcor.csv: {e}. Python-side track adjustments will not work.")
 # --- End trackcor.csv loading ---
 
-# --- Database path --- OLD SQLITE
-# DATABASE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "skater_activity.db") 
-
-# NEW PostgreSQL connection details from Railway Environment Variables
-DATABASE_URL_STR = os.getenv("DATABASE_URL") # Railway provides this
-
-# Fallback to individual components if DATABASE_URL is not set (less likely on Railway but good for local dev)
-DB_HOST = os.getenv("PGHOST") 
-DB_PORT = os.getenv("PGPORT", "5432")
+# --- PostgreSQL connection details from Railway Environment Variables ---
+DB_HOST = os.getenv("PGHOST")
+DB_PORT = os.getenv("PGPORT", "5432") # Default to 5432 if not set
 DB_NAME = os.getenv("PGDATABASE")
 DB_USER = os.getenv("PGUSER")
 DB_PASSWORD = os.getenv("PGPASSWORD")
@@ -279,28 +273,23 @@ async def get_skater_prediction_from_r(
 def get_saved_prediction_for_skater(skater_name: str) -> dict:
     """
     Retrieves the latest saved prediction for a specific athlete by name
-    from the PostgreSQL database. This database is populated by the R Shiny app.
+    from the Railway PostgreSQL database. This database is populated by the R Shiny app.
     """
     conn = None
-    
-    if not DATABASE_URL_STR and not all([DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]):
-        return {"error": "Database connection environment variables (DATABASE_URL or PGHOST, PGDATABASE, etc.) not set for Python API."}
-    
+    if not all([DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]):
+        error_msg = "Database connection environment variables (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) are not fully set for Python API."
+        print(f"ERROR in get_saved_prediction_for_skater: {error_msg}")
+        return {"error": error_msg}
     try:
-        if DATABASE_URL_STR:
-            conn = psycopg2.connect(DATABASE_URL_STR)
-            # print("Connected to PostgreSQL using DATABASE_URL") # For debugging
-        else: # Fallback to component variables
-            conn = psycopg2.connect(
-                host=DB_HOST,
-                port=DB_PORT,
-                dbname=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD
-            )
-            # print("Connected to PostgreSQL using component variables") # For debugging
-        
-        cursor = conn.cursor(cursor_factory=RealDictCursor) 
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD
+        )
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        print(f"Python API connected to PostgreSQL: dbname={DB_NAME}, host={DB_HOST}")
 
         cursor.execute("""
             SELECT prediction_output_json, input_parameters_json, prediction_timestamp 
@@ -321,20 +310,22 @@ def get_saved_prediction_for_skater(skater_name: str) -> dict:
             if isinstance(prediction_data, str):
                 prediction_data = json.loads(prediction_data)
             if isinstance(input_params_data, str):
-                input_params_data = json.loads(input_params_data) # Should be dict if from JSONB
-            
+                 input_params_data = json.loads(input_params_data) if input_params_data else {}
+            else:
+                input_params_data = input_params_data if input_params_data is not None else {}
+
             output_to_return = {
-                "retrieved_prediction_timestamp": prediction_timestamp.isoformat() if prediction_timestamp else None, 
-                "input_params_for_this_prediction": input_params_data if input_params_data else {},
+                "retrieved_prediction_timestamp": prediction_timestamp.isoformat() if prediction_timestamp else None,
+                "input_params_for_this_prediction": input_params_data, 
                 "raw_prediction_from_db": prediction_data if prediction_data else {}
             }
 
             if prediction_data and 'predicted_pb_summary' in prediction_data and prediction_data['predicted_pb_summary']:
                 raw_pred_vector = prediction_data['predicted_pb_summary']
-                if len(raw_pred_vector) >= 10: 
-                    predicted_time_cs = raw_pred_vector[1] 
-                    predicted_paces_cs = raw_pred_vector[2:10] 
-                    output_to_return["predicted_time"] = predicted_time_cs 
+                if len(raw_pred_vector) >= 10:
+                    predicted_time_cs = raw_pred_vector[1]
+                    predicted_paces_cs = raw_pred_vector[2:10]
+                    output_to_return["predicted_time"] = predicted_time_cs
                     output_to_return["predicted_paces"] = predicted_paces_cs
                     predicted_time_sec = predicted_time_cs / 100
                     minutes = int(predicted_time_sec // 60)
@@ -349,26 +340,33 @@ def get_saved_prediction_for_skater(skater_name: str) -> dict:
                     output_to_return["predicted_paces_minutes"] = predicted_paces_minutes
                 else:
                     output_to_return["warning_prediction_structure"] = "Predicted PB summary from DB has unexpected structure."
-
+            
             if prediction_data and 'similar_cases_pb_details' in prediction_data:
-                 output_to_return["similar_cases"] = prediction_data['similar_cases_pb_details']
+                output_to_return["similar_cases"] = prediction_data['similar_cases_pb_details']
             else:
                 output_to_return["similar_cases"] = [] 
             
             return output_to_return
         else:
-            return {"message": f"No saved prediction found for '{skater_name}'. You can ask to generate one using the R model, or generate it in the R Shiny app first."}
+            return {"message": f"No saved prediction found for '{skater_name}'. You can generate one in the R Shiny app."}
 
+    except psycopg2.OperationalError as e:
+        # More specific error for connection issues
+        error_msg = f"PostgreSQL OperationalError (check connection, credentials, host, db existence): {e}"
+        print(f"ERROR in get_saved_prediction_for_skater: {error_msg}")
+        return {"error": error_msg}
     except psycopg2.Error as e:
-        # Specific check for common Railway initial connection issue if tables not ready
-        if "relation \"saved_skater_predictions\" does not exist" in str(e).lower():
-             return {"message": f"The predictions table isn't ready yet in the database for skater '{skater_name}'. Please try generating a prediction in the R Shiny app first, then ask again in a few moments."}
-        return {"error": f"PostgreSQL Database error: {e}"}
+        error_msg = f"PostgreSQL Database error: {e}"
+        print(f"ERROR in get_saved_prediction_for_skater: {error_msg}")
+        return {"error": error_msg}
     except Exception as e:
-        return {"error": f"An unexpected error occurred: {str(e)}"}
+        error_msg = f"An unexpected error occurred in get_saved_prediction_for_skater: {str(e)}"
+        print(f"ERROR in get_saved_prediction_for_skater: {error_msg}")
+        return {"error": error_msg}
     finally:
         if conn:
             conn.close()
+            print("Python API closed PostgreSQL connection.")
 
 @tool
 def get_lap_times(track: str, name: str) -> dict:

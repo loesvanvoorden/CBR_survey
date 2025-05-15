@@ -8,7 +8,7 @@ library(tidyverse)
 library(RColorBrewer)
 library(RSQLite)
 library(RPostgres)
-library(DBI) # RPostgres uses DBI
+library(DBI)
 
 # It's assumed utils.R is in the same directory or its path is correctly specified.
 # If app3000ostaXAI.R and utils.R are in different locations due to permission issues,
@@ -248,103 +248,69 @@ ui <- fluidPage(
 # Define server logic to summarize and view selected dataset ----
 server <- function(input, output,session) {
 
-# --- Database Setup for Logging Skater Selections & Predictions ---
+# --- Database Setup for Logging Skater Selections ---
+# Uses Railway's environment variables for PostgreSQL
 
-# NEW PostgreSQL Connection using Railway Environment Variables
-database_url <- Sys.getenv("DATABASE_URL")
-db <- NULL
+db_host <- Sys.getenv("PGHOST", unset = "") 
+db_port <- Sys.getenv("PGPORT", unset = "5432") 
+db_name <- Sys.getenv("PGDATABASE", unset = "") 
+db_user <- Sys.getenv("PGUSER", unset = "")     
+db_password <- Sys.getenv("PGPASSWORD", unset = "")
 
-if (database_url != "") {
-  tryCatch({
-    # Attempt to connect using the DATABASE_URL directly
-    # RPostgres::Postgres() doesn't directly take a DSN string in dbConnect like some other drivers.
-    # We need to parse it or rely on odbc/other packages if we want to use DSN directly.
-    # For RPostgres, it's often easier to stick to individual parameters if DATABASE_URL parsing is complex.
-    # However, if DATABASE_URL is a libpq connection string, dbConnect might handle some forms of it.
-    # Let's assume for now we might need to parse or use individual components as primary.
-    
-    # Fallback to individual components if direct DATABASE_URL is tricky or not fully supported by RPostgres dbConnect in a simple way
-    db_host <- Sys.getenv("PGHOST", unset = Sys.getenv("DB_HOST")) 
-    db_port <- as.integer(Sys.getenv("PGPORT", unset = Sys.getenv("DB_PORT", unset = 5432)))
-    db_name <- Sys.getenv("PGDATABASE", unset = Sys.getenv("DB_NAME")) 
-    db_user <- Sys.getenv("PGUSER", unset = Sys.getenv("DB_USER"))     
-    db_password <- Sys.getenv("PGPASSWORD", unset = Sys.getenv("DB_PASSWORD"))
+db <- NULL # Initialize db to NULL
 
-    if (any(sapply(list(db_host, db_name, db_user, db_password), function(x) x == "" || is.null(x)))) {
-      warning("Database environment variables (PGHOST, PGDATABASE, PGUSER, PGPASSWORD) not fully set. App may not connect to PostgreSQL.")
-    } else {
-      db <- dbConnect(RPostgres::Postgres(),
-                      dbname = db_name,
-                      host = db_host,
-                      port = db_port,
-                      user = db_user,
-                      password = db_password)
-      print("Successfully connected to Railway PostgreSQL database using component variables.")
-    }
-  }, error = function(e) {
-    warning(paste("Failed to connect to Railway PostgreSQL database using component variables:", e$message))
-  })
+if (any(sapply(list(db_host, db_name, db_user, db_password), function(x) x == ""))) {
+  warning("One or more Railway PostgreSQL environment variables (PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD) are not set. Database functionality will be disabled.")
 } else {
-    # Fallback to individual components if DATABASE_URL is not set
-    db_host <- Sys.getenv("PGHOST", unset = Sys.getenv("DB_HOST")) 
-    db_port <- as.integer(Sys.getenv("PGPORT", unset = Sys.getenv("DB_PORT", unset = 5432)))
-    db_name <- Sys.getenv("PGDATABASE", unset = Sys.getenv("DB_NAME")) 
-    db_user <- Sys.getenv("PGUSER", unset = Sys.getenv("DB_USER"))     
-    db_password <- Sys.getenv("PGPASSWORD", unset = Sys.getenv("DB_PASSWORD"))
-
-    if (any(sapply(list(db_host, db_name, db_user, db_password), function(x) x == "" || is.null(x)))) {
-      warning("DATABASE_URL not set, and other DB environment variables (PGHOST, etc.) also not fully set. App may not connect to PostgreSQL.")
-    } else {
-      tryCatch({
-        db <- dbConnect(RPostgres::Postgres(),
-                        dbname = db_name,
-                        host = db_host,
-                        port = db_port,
-                        user = db_user,
-                        password = db_password)
-        print("Successfully connected to Railway PostgreSQL database using component variables (DATABASE_URL was empty).")
-      }, error = function(e) {
-        warning(paste("Failed to connect to Railway PostgreSQL database using component variables (DATABASE_URL was empty):", e$message))
-      })
-    }
-}
-
-# Table Creation (SQL syntax is largely the same)
-# Ensure db is not NULL before proceeding
-if (!is.null(db)) {
+  tryCatch({
+    db <- dbConnect(RPostgres::Postgres(),
+                    dbname = db_name,
+                    host = db_host,
+                    port = as.integer(db_port),
+                    user = db_user,
+                    password = db_password)
+    print(paste("Successfully connected to Railway PostgreSQL database:", db_name, "on host", db_host))
+    
+    # Table Creation (SERIAL is auto-incrementing in PostgreSQL)
+    # TIMESTAMPTZ for timestamp with timezone, JSONB for JSON content
     if (!dbExistsTable(db, "skater_selection_log")) {
       dbExecute(db, "CREATE TABLE skater_selection_log (
-                      log_id SERIAL PRIMARY KEY, # SERIAL is auto-incrementing in PostgreSQL
-                      timestamp TIMESTAMPTZ NOT NULL, # TIMESTAMPTZ for timestamp with timezone
+                      log_id SERIAL PRIMARY KEY,
+                      timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
                       shiny_session_token TEXT NOT NULL,
                       selected_skater_id TEXT NOT NULL
                     )")
-      dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_timestamp ON skater_selection_log (timestamp)")
-      dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_skater_id ON skater_selection_log (selected_skater_id)")
+      dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_log_timestamp ON skater_selection_log (timestamp)")
+      dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_log_skater_id ON skater_selection_log (selected_skater_id)")
+      print("Table 'skater_selection_log' created or already exists.")
     }
 
     if (!dbExistsTable(db, "saved_skater_predictions")) {
       dbExecute(db, "CREATE TABLE saved_skater_predictions (
-                      prediction_id SERIAL PRIMARY KEY, # SERIAL for auto-increment
+                      prediction_id SERIAL PRIMARY KEY,
                       skater_osta_id TEXT NOT NULL,
                       skater_name_at_prediction TEXT,
-                      prediction_timestamp TIMESTAMPTZ NOT NULL, # TIMESTAMPTZ
-                      input_parameters_json JSONB, # JSONB is generally preferred over TEXT for JSON in PostgreSQL
-                      prediction_output_json JSONB, # JSONB
+                      prediction_timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      input_parameters_json JSONB,
+                      prediction_output_json JSONB,
                       shiny_session_token TEXT
                     )")
       dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_pred_skater_osta_id ON saved_skater_predictions (skater_osta_id)")
       dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_pred_timestamp ON saved_skater_predictions (prediction_timestamp)")
+      print("Table 'saved_skater_predictions' created or already exists.")
     }
-} else {
-    warning("Database connection is NULL. Tables will not be created.")
+
+  }, error = function(e) {
+    warning(paste("Failed to connect to Railway PostgreSQL or create tables:", e$message))
+    db <- NULL # Ensure db is NULL if connection or setup fails
+  })
 }
 
 # Disconnect when the session ends
 session$onSessionEnded(function() {
   if (!is.null(db)) {
     dbDisconnect(db)
-    print("Disconnected from PostgreSQL database")
+    print("Disconnected from Railway PostgreSQL database")
   }
 })
 # --- End Database Setup ---
@@ -750,66 +716,70 @@ races<-data.frame()
     } else {csnpPB<-NULL}
    
   # --- Save prediction to database ---
-  tryCatch({
-    current_skater_id <- input$rb
-    current_skater_name <- filter(candidates, id == current_skater_id)$Naam
-    current_timestamp <- strftime(Sys.time(), "%Y-%m-%d %H:%M:%S")
-    session_token <- session$token
+  if (!is.null(db)) { # Check if db connection is valid
+    tryCatch({
+      current_skater_id <- input$rb
+      current_skater_name <- filter(candidates, id == current_skater_id)$Naam
+      current_timestamp <- strftime(Sys.time(), "%Y-%m-%d %H:%M:%S")
+      session_token <- session$token
 
-    # Consolidate input parameters. This is a selection, more could be added.
-    # The 'q' object itself is quite large and has many columns from 'cb'.
-    # For now, let's capture key reactive inputs that define the prediction scenario.
-    input_params_list <- list(
-      skater_osta_id = current_skater_id,
-      target_pb_track = input$pb_track,
-      target_age_pb = input$agePB,
-      use_track_adjustment = input$adjust,
-      use_3000m_non_pb = input$m3000,
-      use_500m_pb = input$m500,
-      use_1000m_pb = input$m1000,
-      use_1500m_pb = input$m1500,
-      filter_finish_time_3000m = input$ft_r,
-      filter_finish_time_range_secs = if(input$ft_r) input$ftrange else NULL,
-      filter_age_pb = input$age_r,
-      filter_age_range_years = if(input$age_r) input$agerange else NULL,
-      selected_500m_race_label = if(input$m500) input$sel500 else NULL,
-      selected_1000m_race_label = if(input$m1000) input$sel1000 else NULL,
-      selected_1500m_race_label = if(input$m1500) input$sel1500 else NULL,
-      selected_3000m_race_label = if(input$m3000) input$sel3000 else NULL,
-      manual_lap_input_500_open = if(input$m500) input$open_500 else NULL,
-      manual_lap_input_500_r1 = if(input$m500) input$r1_500 else NULL,
-      # ... (add other manual lap inputs if needed) ...
-      # The 'q' object could be stored but it's large. For now, focus on user-set parameters.
-      # query_object_snapshot = q # Be cautious, q might be very large.
-      # Let's rather store the specific lap inputs that form `q`
-      q_Track_n = query$Track_n, q_Track_p = query$Track_p, q_endtime_n = query$endtime_n, q_age_perf_n = query$age_perf_n, q_Gender_n = query$Gender_n,
-      q_r_500_0_n = query$r_500_0_n, q_ar_500_0_n = query$ar_500_0_n, q_r_500_1_n = query$r_500_1_n, q_ar_500_1_n = query$ar_500_1_n,
-      q_r_1000_0_n = query$r_1000_0_n, q_ar_1000_0_n = query$ar_1000_0_n, q_r_1000_1_n = query$r_1000_1_n, q_ar_1000_1_n = query$ar_1000_1_n, q_r_1000_2_n = query$r_1000_2_n, q_ar_1000_2_n = query$ar_1000_2_n,
-      q_r_1500_0_n = query$r_1500_0_n, q_ar_1500_0_n = query$ar_1500_0_n, q_r_1500_1_n = query$r_1500_1_n, q_ar_1500_1_n = query$ar_1500_1_n, q_r_1500_2_n = query$r_1500_2_n, q_ar_1500_2_n = query$ar_1500_2_n, q_r_1500_3_n = query$r_1500_3_n, q_ar_1500_3_n = query$ar_1500_3_n,
-      q_r_0_n = query$r_0_n, q_ar_0_n = query$ar_0_n, q_r_1_n = query$r_1_n, q_ar_1_n = query$ar_1_n, q_r_2_n = query$r_2_n, q_ar_2_n = query$ar_2_n, q_r_3_n = query$r_3_n, q_ar_3_n = query$ar_3_n,
-      q_r_4_n = query$r_4_n, q_ar_4_n = query$ar_4_n, q_r_5_n = query$r_5_n, q_ar_5_n = query$ar_5_n, q_r_6_n = query$r_6_n, q_ar_6_n = query$ar_6_n, q_r_7_n = query$r_7_n, q_ar_7_n = query$ar_7_n
-    )
-    input_parameters_json_str <- jsonlite::toJSON(input_params_list, auto_unbox = TRUE, pretty = FALSE)
-    
-    # fullpred is a list of: 1=pred vector, 2=cs df, 3=csnp df, 4=pbshort df
-    # To make it a single JSON object that's easily parseable, wrap it.
-    # Note: data frames by default become arrays of objects in jsonlite.
-    prediction_output_list <- list(
-        predicted_pb_summary = pred, # This is a named vector
-        similar_cases_pb_details = cs, # data.frame
-        similar_cases_non_pb_details_3k = if(!is.null(csnp3k)) csnp3k else data.frame(), # data.frame or empty
-        similar_cases_shorter_dist_pbs = if(!is.null(csnpPB)) csnpPB else data.frame() # data.frame or empty
-    )
-    prediction_output_json_str <- jsonlite::toJSON(prediction_output_list, auto_unbox = TRUE, dataframe="rows", pretty = FALSE)
+      # Consolidate input parameters. This is a selection, more could be added.
+      # The 'q' object itself is quite large and has many columns from 'cb'.
+      # For now, let's capture key reactive inputs that define the prediction scenario.
+      input_params_list <- list(
+        skater_osta_id = current_skater_id,
+        target_pb_track = input$pb_track,
+        target_age_pb = input$agePB,
+        use_track_adjustment = input$adjust,
+        use_3000m_non_pb = input$m3000,
+        use_500m_pb = input$m500,
+        use_1000m_pb = input$m1000,
+        use_1500m_pb = input$m1500,
+        filter_finish_time_3000m = input$ft_r,
+        filter_finish_time_range_secs = if(input$ft_r) input$ftrange else NULL,
+        filter_age_pb = input$age_r,
+        filter_age_range_years = if(input$age_r) input$agerange else NULL,
+        selected_500m_race_label = if(input$m500) input$sel500 else NULL,
+        selected_1000m_race_label = if(input$m1000) input$sel1000 else NULL,
+        selected_1500m_race_label = if(input$m1500) input$sel1500 else NULL,
+        selected_3000m_race_label = if(input$m3000) input$sel3000 else NULL,
+        manual_lap_input_500_open = if(input$m500) input$open_500 else NULL,
+        manual_lap_input_500_r1 = if(input$m500) input$r1_500 else NULL,
+        # ... (add other manual lap inputs if needed) ...
+        # The 'q' object could be stored but it's large. For now, focus on user-set parameters.
+        # query_object_snapshot = q # Be cautious, q might be very large.
+        # Let's rather store the specific lap inputs that form `q`
+        q_Track_n = query$Track_n, q_Track_p = query$Track_p, q_endtime_n = query$endtime_n, q_age_perf_n = query$age_perf_n, q_Gender_n = query$Gender_n,
+        q_r_500_0_n = query$r_500_0_n, q_ar_500_0_n = query$ar_500_0_n, q_r_500_1_n = query$r_500_1_n, q_ar_500_1_n = query$ar_500_1_n,
+        q_r_1000_0_n = query$r_1000_0_n, q_ar_1000_0_n = query$ar_1000_0_n, q_r_1000_1_n = query$r_1000_1_n, q_ar_1000_1_n = query$ar_1000_1_n, q_r_1000_2_n = query$r_1000_2_n, q_ar_1000_2_n = query$ar_1000_2_n,
+        q_r_1500_0_n = query$r_1500_0_n, q_ar_1500_0_n = query$ar_1500_0_n, q_r_1500_1_n = query$r_1500_1_n, q_ar_1500_1_n = query$ar_1500_1_n, q_r_1500_2_n = query$r_1500_2_n, q_ar_1500_2_n = query$ar_1500_2_n, q_r_1500_3_n = query$r_1500_3_n, q_ar_1500_3_n = query$ar_1500_3_n,
+        q_r_0_n = query$r_0_n, q_ar_0_n = query$ar_0_n, q_r_1_n = query$r_1_n, q_ar_1_n = query$ar_1_n, q_r_2_n = query$r_2_n, q_ar_2_n = query$ar_2_n, q_r_3_n = query$r_3_n, q_ar_3_n = query$ar_3_n,
+        q_r_4_n = query$r_4_n, q_ar_4_n = query$ar_4_n, q_r_5_n = query$r_5_n, q_ar_5_n = query$ar_5_n, q_r_6_n = query$r_6_n, q_ar_6_n = query$ar_6_n, q_r_7_n = query$r_7_n, q_ar_7_n = query$ar_7_n
+      )
+      input_parameters_json_str <- jsonlite::toJSON(input_params_list, auto_unbox = TRUE, pretty = FALSE)
+      
+      # fullpred is a list of: 1=pred vector, 2=cs df, 3=csnp df, 4=pbshort df
+      # To make it a single JSON object that's easily parseable, wrap it.
+      # Note: data frames by default become arrays of objects in jsonlite.
+      prediction_output_list <- list(
+          predicted_pb_summary = pred, # This is a named vector
+          similar_cases_pb_details = cs, # data.frame
+          similar_cases_non_pb_details_3k = if(!is.null(csnp3k)) csnp3k else data.frame(), # data.frame or empty
+          similar_cases_shorter_dist_pbs = if(!is.null(csnpPB)) csnpPB else data.frame() # data.frame or empty
+      )
+      prediction_output_json_str <- jsonlite::toJSON(prediction_output_list, auto_unbox = TRUE, dataframe="rows", pretty = FALSE)
 
-    dbExecute(db, 
-              "INSERT INTO saved_skater_predictions (skater_osta_id, skater_name_at_prediction, prediction_timestamp, input_parameters_json, prediction_output_json, shiny_session_token) VALUES (?, ?, ?, ?, ?, ?)", 
-              params = list(current_skater_id, current_skater_name, current_timestamp, input_parameters_json_str, prediction_output_json_str, session_token)
-    )
-    print(paste("Saved prediction for skater:", current_skater_name, "(ID:", current_skater_id, ") to database."))
-  }, error = function(e) {
-    warning(paste("Failed to save prediction to database:", e$message))
-  })
+      dbExecute(db, 
+                "INSERT INTO saved_skater_predictions (skater_osta_id, skater_name_at_prediction, prediction_timestamp, input_parameters_json, prediction_output_json, shiny_session_token) VALUES (?, ?, ?, ?, ?, ?)", 
+                params = list(current_skater_id, current_skater_name, current_timestamp, input_parameters_json_str, prediction_output_json_str, session_token)
+      )
+      print(paste("Saved prediction for skater:", current_skater_name, "(ID:", current_skater_id, ") to Railway DB."))
+    }, error = function(e) {
+      warning(paste("Failed to save prediction to Railway DB:", e$message))
+    })
+  } else {
+    # print("Database not available for saving prediction.")
+  }
   # --- End save prediction to database ---
 
   list(pb,cstable, csnp3k,csnpPB)
