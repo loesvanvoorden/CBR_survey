@@ -276,6 +276,8 @@ def get_saved_prediction_for_skater(skater_name: str) -> dict:
             return {"error": f"Database not found at {DATABASE_PATH}. Please ensure the R Shiny app has run and created it."}
 
         conn = sqlite3.connect(DATABASE_PATH)
+        # To make it return dictionaries directly for rows
+        conn.row_factory = sqlite3.Row 
         cursor = conn.cursor()
 
         # Normalize skater_name for lookup, assuming names in DB might have varied casing
@@ -283,7 +285,7 @@ def get_saved_prediction_for_skater(skater_name: str) -> dict:
         # So, a case-sensitive match might be intended. Let's try an exact match first.
         # For more robust matching, consider LOWER() on both sides if needed.
         cursor.execute("""
-            SELECT prediction_output_json 
+            SELECT prediction_output_json, input_parameters_json, prediction_timestamp 
             FROM saved_skater_predictions 
             WHERE skater_name_at_prediction = ? 
             ORDER BY prediction_timestamp DESC 
@@ -294,53 +296,36 @@ def get_saved_prediction_for_skater(skater_name: str) -> dict:
         conn.close()
 
         if row:
-            prediction_output_json_str = row[0]
+            prediction_output_json_str = row["prediction_output_json"]
+            input_parameters_json_str = row["input_parameters_json"]
+            prediction_timestamp = row["prediction_timestamp"]
+
             if prediction_output_json_str:
-                # The JSON string from R might contain NaN, which Python's json.loads doesn't like.
-                # R's jsonlite by default converts NaN to "null" in JSON, which is fine.
-                # If NaNs were forced to string "NaN", replacement would be needed:
-                # prediction_output_json_str = prediction_output_json_str.replace': NaN', ': null') 
                 prediction_data = json.loads(prediction_output_json_str)
                 
-                # --- Add the extra fields for display consistency if they are not in the stored JSON ---
-                # The R Shiny app saves `pred` (named vector) and `cs` (dataframe) etc.
-                # `pred` becomes an array in JSON. `cs` (similar_cases_pb_details) becomes array of objects.
-                # The example output you showed has:
-                # 'predicted_time': (number, from pred[2])
-                # 'predicted_paces': (array of numbers, from pred[3:10])
-                # 'similar_cases': (array of objects, from `cs` which is `prediction_data['similar_cases_pb_details']`)
-                # 'predicted_time_seconds': 
-                # 'predicted_time_minutes': 
-                # 'predicted_paces_seconds': 
-                # 'predicted_paces_minutes':
+                input_params_data = {}
+                if input_parameters_json_str:
+                    try:
+                        input_params_data = json.loads(input_parameters_json_str)
+                    except json.JSONDecodeError:
+                        input_params_data = {"warning": "Could not parse input_parameters_json"}
 
-                # Let's try to reconstruct these display fields.
-                # The `prediction_data` should have `predicted_pb_summary` (from `pred`)
-                # and `similar_cases_pb_details` (from `cs`).
-                
-                output_to_return = {"raw_prediction_from_db": prediction_data}
+                output_to_return = {
+                    "retrieved_prediction_timestamp": prediction_timestamp,
+                    "input_params_for_this_prediction": input_params_data, # Parsed input params
+                    "raw_prediction_from_db": prediction_data # Original prediction output structure
+                }
 
+                # Reconstruct display fields from prediction_data (as before)
                 if 'predicted_pb_summary' in prediction_data and prediction_data['predicted_pb_summary']:
-                    # R's `pred` vector was: c("voorspeld PB", input$pb_track, endtime_pred, round(pred[3:10]/100,2))
-                    # Assuming jsonlite converted this named vector to an array/list.
-                    # Example: pred <- c(type="voorspeld PB", baan="AL", tijd="4:42.76", opening=22.01, ...)
-                    # jsonlite might turn named vector into a list of single-key objects or a flat list.
-                    # If it's a flat list: pred_summary[0] is type, pred_summary[1] is baan, pred_summary[2] is time string, pred_summary[3] is opening_cs/100 ...
-                    # The `predict_pb` function's `pred` (first element of `fullpred`) has:
-                    # pred[1] = 0 (placeholder), pred[2] = predicted endtime_cs, pred[3:10] = predicted paces_cs
-                    
-                    # Based on R: `predpb<-c("voorspeld PB",input$pb_track,endtime_pred ,round(pred[3:10]/100,2))` (this is `tablePB()[[1]][1,]`)
-                    # And `prediction_output_list$predicted_pb_summary = pred` (where `pred` is from `predict_pb`)
-                    # So, `prediction_data['predicted_pb_summary']` should be the direct output of `predict_pb`'s first element.
-                    raw_pred_vector = prediction_data['predicted_pb_summary'] # This should be a list/array
+                    raw_pred_vector = prediction_data['predicted_pb_summary']
 
-                    if len(raw_pred_vector) >= 10: # Ensure it has endtime and 8 paces
-                        predicted_time_cs = raw_pred_vector[1] # pred[2] from predict_pb's output
-                        predicted_paces_cs = raw_pred_vector[2:10] # pred[3:10] from predict_pb's output (already divided by 100 in R if saved from `pb` df, but raw from `pred` are cs)
-                                                                  # The `pred` variable in R is directly from `predict_pb`, so these are in CS.
+                    if len(raw_pred_vector) >= 10: 
+                        predicted_time_cs = raw_pred_vector[1] 
+                        predicted_paces_cs = raw_pred_vector[2:10] 
 
-                        output_to_return["predicted_time"] = predicted_time_cs # Retaining original cs value
-                        output_to_return["predicted_paces"] = predicted_paces_cs # Retaining original cs values for paces
+                        output_to_return["predicted_time"] = predicted_time_cs 
+                        output_to_return["predicted_paces"] = predicted_paces_cs
 
                         predicted_time_sec = predicted_time_cs / 100
                         minutes = int(predicted_time_sec // 60)
@@ -355,15 +340,13 @@ def get_saved_prediction_for_skater(skater_name: str) -> dict:
                         output_to_return["predicted_paces_seconds"] = predicted_paces_sec
                         output_to_return["predicted_paces_minutes"] = predicted_paces_minutes
                     else:
-                        output_to_return["warning"] = "Predicted PB summary from DB has unexpected structure."
+                        output_to_return["warning_prediction_structure"] = "Predicted PB summary from DB has unexpected structure."
 
                 if 'similar_cases_pb_details' in prediction_data:
-                    # This comes from R's `cs` dataframe.
-                    # R: `cstable<-data.frame(cbind(sprintf("%02i",seq.int(nrow(cs))),round(cs$age_perf_p,0), pbstimes, paste0(substr(SecToHms(cs$endtime_p/100, digit=2),4,12), " (",cs$Track_p,")" )))`
-                    # The R code saves `cs` (from predict_pb's output) directly.
-                    # `predict_pb`'s `cs` are the raw selected rows from `cb`.
-                    # The user example showed `similar_cases` having `r_0_n`, `PersonID` etc. which are direct columns from `cb`.
                     output_to_return["similar_cases"] = prediction_data['similar_cases_pb_details']
+                else:
+                    # Ensure similar_cases key exists even if empty, for consistent access by agent
+                    output_to_return["similar_cases"] = [] 
                 
                 return output_to_return
             else:
