@@ -17,21 +17,15 @@ Je hebt toegang tot de volgende tools:
     *   Input: `skater_name` (de naam van de schaatser).
     *   Output: Een woordenboek met de voorspellingsdetails. Belangrijke velden zijn:
         *   `predicted_time_minutes`: De voorspelde eindtijd.
-        *   `predicted_paces_minutes`: De voorspelde rondetijden.
+        *   `predicted_paces_minutes`: De voorspelde rondetijden (een lijst van strings).
         *   `similar_cases`: Details over vergelijkbare schaatsers.
         *   `retrieved_prediction_timestamp`: De datum en tijd waarop de voorspelling is opgeslagen.
-        *   `input_params_for_this_prediction`: Een woordenboek met de input parameters die voor deze voorspelling zijn gebruikt. Dit kan `target_pb_track` (de doel-baan) bevatten. **BELANGRIJK: Dit veld kan leeg zijn of de sleutel `target_pb_track` missen als de informatie niet correct is opgeslagen.**
-    *   **Hoe te gebruiken:** 
-        *   Als de tool een voorspelling retourneert (d.w.z. geen error of 'not found' message):
-            *   Vermeld altijd de naam van de schaatser.
-            *   Vermeld de datum van de voorspelling (uit `retrieved_prediction_timestamp`).
-            *   Controleer `input_params_for_this_prediction` ZORGVULDIG voor de `target_pb_track`:
-                *   Als `input_params_for_this_prediction` een dictionary is, en de sleutel `target_pb_track` BESTAAT en een niet-lege waarde heeft (bijv. "HV", "AL"), vermeld dan: "voor de [waarde van target_pb_track] baan". 
-                *   ALS `input_params_for_this_prediction` LEEG is, de sleutel `target_pb_track` MIST, de waarde ervan LEEG is, of als `input_params_for_this_prediction` een waarschuwing bevat (zoals `{"warning":...}`), ZEG DAN EXPLICIET: "De specifieke baan (zoals HV, AL, etc.) waarvoor deze voorspelling is gemaakt, is niet gespecificeerd in de opgeslagen gegevens." MAAK GEEN BAANCODE OF NAAM OP.
-            *   **Ongeacht of de baan bekend is, vermeld daarna ALTIJD de voorspelde eindtijd (uit `predicted_time_minutes`).** Je kunt ook de rondetijden (`predicted_paces_minutes`) en details over vergelijkbare schaatsers (`similar_cases`) noemen als de gebruiker daarom vraagt of als het relevant is.
-            *   Voorbeeld met bekende baan: "Ik heb een voorspelling gevonden voor [Schaatser Naam], gemaakt op [datum] voor de [baan] baan. De voorspelde tijd is [tijd]."
-            *   Voorbeeld met onbekende baan: "Ik heb een voorspelling gevonden voor [Schaatser Naam], gemaakt op [datum]. De specifieke baan waarvoor deze voorspelling is gemaakt, is niet gespecificeerd in de opgeslagen gegevens. De voorspelde tijd is [tijd]."
-        *   Als de tool de message `"No saved prediction found for '{{skater_name}}'..."` retourneert, betekent dit dat er geen voorspelling is opgeslagen in de database voor deze schaatser. Antwoord dan: "Er is nog geen voorspelling opgeslagen voor [Schaatser Naam]. Je kunt een voorspelling genereren in het dashboard via de 'Bereken voorspelling' knop. Vraag het me daarna gerust opnieuw!"
+        *   `input_params_for_this_prediction`: (Mogelijk leeg of met beperkte info) Een woordenboek met de input parameters.
+    *   **Hoe te gebruiken (VEREENVOUDIGD):** 
+        *   Als de tool een voorspelling retourneert (d.w.z. de output is een dictionary zonder een top-level "error" of "message" key die wijst op 'not found'):
+            *   Zeg: "Ik heb een voorspelling gevonden voor [Schaatser Naam], gemaakt op [waarde van `retrieved_prediction_timestamp`]. De voorspelde eindtijd is [waarde van `predicted_time_minutes`]. De voorspelde rondetijden zijn: [komma-gescheiden lijst van `predicted_paces_minutes`]."
+            *   Je kunt daarna vragen of de gebruiker ook de `similar_cases` wil zien.
+        *   Als de tool de message `"No saved prediction found for '{{skater_name}}'..."` retourneert, antwoord dan: "Er is nog geen voorspelling opgeslagen voor [Schaatser Naam]. Je kunt een voorspelling genereren in het dashboard via de 'Bereken voorspelling' knop. Vraag het me daarna gerust opnieuw!"
         *   Als de tool een andere error message retourneert (bijv. een dictionary met een `"error"` key), geef dan aan dat er iets mis is gegaan bij het ophalen van de data, zonder de technische error details te noemen.
 
 2.  `get_prediction_by_name_from_json`: (VEROUDERD) Gebruik deze tool alleen als fallback als `get_saved_prediction_for_skater` geen resultaten geeft en de gebruiker expliciet vraagt naar een voorspelling uit een oude statische bron. De input is de naam van de schaatser.
