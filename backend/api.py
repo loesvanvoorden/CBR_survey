@@ -13,6 +13,7 @@ from typing import List, Dict, Optional
 from langchain_core.messages import HumanMessage, AIMessage
 import httpx
 import pandas as pd
+import sqlite3 # Added for DB access
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -41,6 +42,11 @@ try:
 except Exception as e:
     print(f"Warning: Could not load trackcor.csv: {e}. Python-side track adjustments will not work.")
 # --- End trackcor.csv loading ---
+
+# --- Database path ---
+# Assuming api.py is in backend/, and data/ is at the project root.
+# Adjust if your project structure is different.
+DATABASE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "skater_activity.db")
 
 # Define tools
 
@@ -104,7 +110,7 @@ async def get_skater_prediction_from_r(
     age_range_val_years: int = 0      # Age range in years
 ) -> dict:
     """
-    Retrieves a 3000m prediction for a specific athlete by name by calling the R Plumber API.
+    (Fallback if no saved prediction is found) Retrieves a 3000m prediction for an athlete by calling the R Plumber API.
     It attempts to fetch the athlete's PBs/SBs to form a query.
     Parameters:
         skater_name (str): Name of the skater.
@@ -260,6 +266,119 @@ async def get_skater_prediction_from_r(
         return {"error": f"An unexpected error occurred: {str(e)}"}
 
 @tool
+def get_saved_prediction_for_skater(skater_name: str) -> dict:
+    """
+    Retrieves the latest saved prediction for a specific athlete by name
+    from the `skater_activity.db` database. This database is populated by the R Shiny app.
+    """
+    try:
+        if not os.path.exists(DATABASE_PATH):
+            return {"error": f"Database not found at {DATABASE_PATH}. Please ensure the R Shiny app has run and created it."}
+
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+
+        # Normalize skater_name for lookup, assuming names in DB might have varied casing
+        # However, the R app saves `skater_name_at_prediction` directly from `candidates$Naam`
+        # So, a case-sensitive match might be intended. Let's try an exact match first.
+        # For more robust matching, consider LOWER() on both sides if needed.
+        cursor.execute("""
+            SELECT prediction_output_json 
+            FROM saved_skater_predictions 
+            WHERE skater_name_at_prediction = ? 
+            ORDER BY prediction_timestamp DESC 
+            LIMIT 1
+        """, (skater_name,))
+        
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            prediction_output_json_str = row[0]
+            if prediction_output_json_str:
+                # The JSON string from R might contain NaN, which Python's json.loads doesn't like.
+                # R's jsonlite by default converts NaN to "null" in JSON, which is fine.
+                # If NaNs were forced to string "NaN", replacement would be needed:
+                # prediction_output_json_str = prediction_output_json_str.replace': NaN', ': null') 
+                prediction_data = json.loads(prediction_output_json_str)
+                
+                # --- Add the extra fields for display consistency if they are not in the stored JSON ---
+                # The R Shiny app saves `pred` (named vector) and `cs` (dataframe) etc.
+                # `pred` becomes an array in JSON. `cs` (similar_cases_pb_details) becomes array of objects.
+                # The example output you showed has:
+                # 'predicted_time': (number, from pred[2])
+                # 'predicted_paces': (array of numbers, from pred[3:10])
+                # 'similar_cases': (array of objects, from `cs` which is `prediction_data['similar_cases_pb_details']`)
+                # 'predicted_time_seconds': 
+                # 'predicted_time_minutes': 
+                # 'predicted_paces_seconds': 
+                # 'predicted_paces_minutes':
+
+                # Let's try to reconstruct these display fields.
+                # The `prediction_data` should have `predicted_pb_summary` (from `pred`)
+                # and `similar_cases_pb_details` (from `cs`).
+                
+                output_to_return = {"raw_prediction_from_db": prediction_data}
+
+                if 'predicted_pb_summary' in prediction_data and prediction_data['predicted_pb_summary']:
+                    # R's `pred` vector was: c("voorspeld PB", input$pb_track, endtime_pred, round(pred[3:10]/100,2))
+                    # Assuming jsonlite converted this named vector to an array/list.
+                    # Example: pred <- c(type="voorspeld PB", baan="AL", tijd="4:42.76", opening=22.01, ...)
+                    # jsonlite might turn named vector into a list of single-key objects or a flat list.
+                    # If it's a flat list: pred_summary[0] is type, pred_summary[1] is baan, pred_summary[2] is time string, pred_summary[3] is opening_cs/100 ...
+                    # The `predict_pb` function's `pred` (first element of `fullpred`) has:
+                    # pred[1] = 0 (placeholder), pred[2] = predicted endtime_cs, pred[3:10] = predicted paces_cs
+                    
+                    # Based on R: `predpb<-c("voorspeld PB",input$pb_track,endtime_pred ,round(pred[3:10]/100,2))` (this is `tablePB()[[1]][1,]`)
+                    # And `prediction_output_list$predicted_pb_summary = pred` (where `pred` is from `predict_pb`)
+                    # So, `prediction_data['predicted_pb_summary']` should be the direct output of `predict_pb`'s first element.
+                    raw_pred_vector = prediction_data['predicted_pb_summary'] # This should be a list/array
+
+                    if len(raw_pred_vector) >= 10: # Ensure it has endtime and 8 paces
+                        predicted_time_cs = raw_pred_vector[1] # pred[2] from predict_pb's output
+                        predicted_paces_cs = raw_pred_vector[2:10] # pred[3:10] from predict_pb's output (already divided by 100 in R if saved from `pb` df, but raw from `pred` are cs)
+                                                                  # The `pred` variable in R is directly from `predict_pb`, so these are in CS.
+
+                        output_to_return["predicted_time"] = predicted_time_cs # Retaining original cs value
+                        output_to_return["predicted_paces"] = predicted_paces_cs # Retaining original cs values for paces
+
+                        predicted_time_sec = predicted_time_cs / 100
+                        minutes = int(predicted_time_sec // 60)
+                        seconds = predicted_time_sec % 60
+                        output_to_return["predicted_time_seconds"] = predicted_time_sec
+                        output_to_return["predicted_time_minutes"] = f"{minutes}m {seconds:.2f}s"
+
+                        predicted_paces_sec = [p / 100 for p in predicted_paces_cs]
+                        predicted_paces_minutes = [
+                            f"{int(ps // 60)}m {ps % 60:.2f}s" for ps in predicted_paces_sec
+                        ]
+                        output_to_return["predicted_paces_seconds"] = predicted_paces_sec
+                        output_to_return["predicted_paces_minutes"] = predicted_paces_minutes
+                    else:
+                        output_to_return["warning"] = "Predicted PB summary from DB has unexpected structure."
+
+                if 'similar_cases_pb_details' in prediction_data:
+                    # This comes from R's `cs` dataframe.
+                    # R: `cstable<-data.frame(cbind(sprintf("%02i",seq.int(nrow(cs))),round(cs$age_perf_p,0), pbstimes, paste0(substr(SecToHms(cs$endtime_p/100, digit=2),4,12), " (",cs$Track_p,")" )))`
+                    # The R code saves `cs` (from predict_pb's output) directly.
+                    # `predict_pb`'s `cs` are the raw selected rows from `cb`.
+                    # The user example showed `similar_cases` having `r_0_n`, `PersonID` etc. which are direct columns from `cb`.
+                    output_to_return["similar_cases"] = prediction_data['similar_cases_pb_details']
+                
+                return output_to_return
+            else:
+                return {"error": "Found record for skater, but prediction data is empty."}
+        else:
+            return {"message": f"No saved prediction found for '{skater_name}'. You can ask to generate one using the R model, or generate it in the R Shiny app first."}
+
+    except sqlite3.Error as e:
+        return {"error": f"Database error: {e}"}
+    except json.JSONDecodeError as e:
+        return {"error": f"Error decoding saved prediction JSON: {e}"}
+    except Exception as e:
+        return {"error": f"An unexpected error occurred while fetching saved prediction: {str(e)}"}
+
+@tool
 def get_lap_times(track: str, name: str) -> dict:
     """
     Retrieve the lap times (r_0 to r_7) for a specific Track and Name.
@@ -342,7 +461,12 @@ def get_lap_times(track: str, name: str) -> dict:
 
 # Initialize LLM and agent
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
-tools = [get_prediction_by_name_from_json, get_skater_prediction_from_r, get_lap_times]
+tools = [
+    get_saved_prediction_for_skater,      # New tool to get predictions from DB
+    get_prediction_by_name_from_json,     # Old tool for static JSON (can be deprecated)
+    get_skater_prediction_from_r,         # Tool to call Plumber (can be fallback)
+    get_lap_times
+]
 agent_chain = initialize_agent(
     tools,
     llm,

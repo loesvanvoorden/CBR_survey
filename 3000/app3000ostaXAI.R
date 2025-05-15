@@ -261,6 +261,22 @@ if (!dbExistsTable(db, "skater_selection_log")) {
   dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_timestamp ON skater_selection_log (timestamp)")
   dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_skater_id ON skater_selection_log (selected_skater_id)")
 }
+
+# Create saved_skater_predictions table if it doesn't exist
+if (!dbExistsTable(db, "saved_skater_predictions")) {
+  dbExecute(db, "CREATE TABLE saved_skater_predictions (
+                  prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  skater_osta_id TEXT NOT NULL,
+                  skater_name_at_prediction TEXT,
+                  prediction_timestamp TEXT NOT NULL,
+                  input_parameters_json TEXT,
+                  prediction_output_json TEXT,
+                  shiny_session_token TEXT
+                )")
+  dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_pred_skater_osta_id ON saved_skater_predictions (skater_osta_id)")
+  dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_pred_timestamp ON saved_skater_predictions (prediction_timestamp)")
+}
+
 # Disconnect when the session ends
 session$onSessionEnded(function() {
   dbDisconnect(db)
@@ -668,6 +684,69 @@ races<-data.frame()
     
     } else {csnpPB<-NULL}
    
+  # --- Save prediction to database ---
+  tryCatch({
+    current_skater_id <- input$rb
+    current_skater_name <- filter(candidates, id == current_skater_id)$Naam
+    current_timestamp <- strftime(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    session_token <- session$token
+
+    # Consolidate input parameters. This is a selection, more could be added.
+    # The 'q' object itself is quite large and has many columns from 'cb'.
+    # For now, let's capture key reactive inputs that define the prediction scenario.
+    input_params_list <- list(
+      skater_osta_id = current_skater_id,
+      target_pb_track = input$pb_track,
+      target_age_pb = input$agePB,
+      use_track_adjustment = input$adjust,
+      use_3000m_non_pb = input$m3000,
+      use_500m_pb = input$m500,
+      use_1000m_pb = input$m1000,
+      use_1500m_pb = input$m1500,
+      filter_finish_time_3000m = input$ft_r,
+      filter_finish_time_range_secs = if(input$ft_r) input$ftrange else NULL,
+      filter_age_pb = input$age_r,
+      filter_age_range_years = if(input$age_r) input$agerange else NULL,
+      selected_500m_race_label = if(input$m500) input$sel500 else NULL,
+      selected_1000m_race_label = if(input$m1000) input$sel1000 else NULL,
+      selected_1500m_race_label = if(input$m1500) input$sel1500 else NULL,
+      selected_3000m_race_label = if(input$m3000) input$sel3000 else NULL,
+      manual_lap_input_500_open = if(input$m500) input$open_500 else NULL,
+      manual_lap_input_500_r1 = if(input$m500) input$r1_500 else NULL,
+      # ... (add other manual lap inputs if needed) ...
+      # The 'q' object could be stored but it's large. For now, focus on user-set parameters.
+      # query_object_snapshot = q # Be cautious, q might be very large.
+      # Let's rather store the specific lap inputs that form `q`
+      q_Track_n = query$Track_n, q_Track_p = query$Track_p, q_endtime_n = query$endtime_n, q_age_perf_n = query$age_perf_n, q_Gender_n = query$Gender_n,
+      q_r_500_0_n = query$r_500_0_n, q_ar_500_0_n = query$ar_500_0_n, q_r_500_1_n = query$r_500_1_n, q_ar_500_1_n = query$ar_500_1_n,
+      q_r_1000_0_n = query$r_1000_0_n, q_ar_1000_0_n = query$ar_1000_0_n, q_r_1000_1_n = query$r_1000_1_n, q_ar_1000_1_n = query$ar_1000_1_n, q_r_1000_2_n = query$r_1000_2_n, q_ar_1000_2_n = query$ar_1000_2_n,
+      q_r_1500_0_n = query$r_1500_0_n, q_ar_1500_0_n = query$ar_1500_0_n, q_r_1500_1_n = query$r_1500_1_n, q_ar_1500_1_n = query$ar_1500_1_n, q_r_1500_2_n = query$r_1500_2_n, q_ar_1500_2_n = query$ar_1500_2_n, q_r_1500_3_n = query$r_1500_3_n, q_ar_1500_3_n = query$ar_1500_3_n,
+      q_r_0_n = query$r_0_n, q_ar_0_n = query$ar_0_n, q_r_1_n = query$r_1_n, q_ar_1_n = query$ar_1_n, q_r_2_n = query$r_2_n, q_ar_2_n = query$ar_2_n, q_r_3_n = query$r_3_n, q_ar_3_n = query$ar_3_n,
+      q_r_4_n = query$r_4_n, q_ar_4_n = query$ar_4_n, q_r_5_n = query$r_5_n, q_ar_5_n = query$ar_5_n, q_r_6_n = query$r_6_n, q_ar_6_n = query$ar_6_n, q_r_7_n = query$r_7_n, q_ar_7_n = query$ar_7_n
+    )
+    input_parameters_json_str <- jsonlite::toJSON(input_params_list, auto_unbox = TRUE, pretty = FALSE)
+    
+    # fullpred is a list of: 1=pred vector, 2=cs df, 3=csnp df, 4=pbshort df
+    # To make it a single JSON object that's easily parseable, wrap it.
+    # Note: data frames by default become arrays of objects in jsonlite.
+    prediction_output_list <- list(
+        predicted_pb_summary = pred, # This is a named vector
+        similar_cases_pb_details = cs, # data.frame
+        similar_cases_non_pb_details_3k = if(!is.null(csnp3k)) csnp3k else data.frame(), # data.frame or empty
+        similar_cases_shorter_dist_pbs = if(!is.null(csnpPB)) csnpPB else data.frame() # data.frame or empty
+    )
+    prediction_output_json_str <- jsonlite::toJSON(prediction_output_list, auto_unbox = TRUE, dataframe="rows", pretty = FALSE)
+
+    dbExecute(db, 
+              "INSERT INTO saved_skater_predictions (skater_osta_id, skater_name_at_prediction, prediction_timestamp, input_parameters_json, prediction_output_json, shiny_session_token) VALUES (?, ?, ?, ?, ?, ?)", 
+              params = list(current_skater_id, current_skater_name, current_timestamp, input_parameters_json_str, prediction_output_json_str, session_token)
+    )
+    print(paste("Saved prediction for skater:", current_skater_name, "(ID:", current_skater_id, ") to database."))
+  }, error = function(e) {
+    warning(paste("Failed to save prediction to database:", e$message))
+  })
+  # --- End save prediction to database ---
+
   list(pb,cstable, csnp3k,csnpPB)
     }
   )
