@@ -1,5 +1,23 @@
 let chatMessages = []; // Added: Local store for chat history
 
+// --- Added: Welcome Message Logic ---
+const welcomeMessageContent = `Hallo! Ik ben een jouw persoonlijke schaatscoachom je te helpen bij het navigeren van het dashboard. Het dashboard kan voorspellen welke tijden schaatsers kunnen rijden op de 3000 meter! Dit dashboard kan echter moeilijk te begrijpen zijn, vandaar dat ik jou hierbij ga helpen. 
+
+Het dashboard heeft verschillende elementen waar bepaalde statistieken worden weergegeven waarmee je verschillende taken kunt uitvoeren. Zo zie je onder het kopje "Rondentijden van de schaatser" de optie om 500, 1000, 1500 en 3000 meter te selecteren of deselecteren, waardoor deze informatie wel of niet wordt meegenomen in de voorspelling. Je kunt bijvoorbeeld alleen de 500 meter selecteren om de voorspelling te baseren op sprinttijden. 
+
+Onder "Bereken voorspelling" kun je de baan selecteren waarop de voorspelling gemaakt wordt. In het dashboard worden de banen als 2-letter stadscode genoteerd. Zijn deze onduidelijk, dan kan ik je hierbij helpen. Hier kun je ook een leeftijd invoeren als je dit mee wilt nemen in je voorspelling. Door de box onder "bereken voorspelling" te selecteren kun je informatie van vergelijkbare schaatsers te zien krijgen. Hier verschijnen dan ook grafieken waar je mij meer informatie over kunt vragen. 
+
+Veel te veel gepraat! Als je iets zou willen weten over jouw specifieke voorspelling, geef dat dan gerust aan mij door. Succes!😁`;
+
+function displayWelcomeMessage() {
+    const chatHistoryElement = document.getElementById('chat-history');
+    if (chatMessages.length === 0) { // Only add welcome message if history is empty
+        chatMessages.push({ type: 'ai', content: welcomeMessageContent });
+        renderChatHistory(chatHistoryElement);
+    }
+}
+// --- End Welcome Message Logic ---
+
 document.getElementById('ask-button').addEventListener('click', async () => {
     const questionInput = document.getElementById('question');
     const question = questionInput.value;
@@ -49,7 +67,9 @@ document.getElementById('reset-button').addEventListener('click', async () => {
     const chatHistoryElement = document.getElementById('chat-history');
     
     chatMessages = []; // Clear local history
-    renderChatHistory(chatHistoryElement); // Clear display
+    // renderChatHistory(chatHistoryElement); // Clear display immediately
+    // Now, instead of just clearing, display the welcome message again after reset
+    displayWelcomeMessage(); // This will add the welcome message and render
 
     try {
         // Optional: Call backend reset, though it's mainly for client-side now
@@ -102,4 +122,10 @@ function renderChatHistory(chatHistoryElement) {
         .join('');
     chatHistoryElement.scrollTop = chatHistoryElement.scrollHeight; // Auto-scroll to bottom
 }
+
+// --- Added: Call displayWelcomeMessage on initial load ---
+document.addEventListener('DOMContentLoaded', () => {
+    displayWelcomeMessage();
+});
+// --- End Call displayWelcomeMessage ---
   
