@@ -6,110 +6,69 @@ library(FNN)
 library(rvest)
 library(tidyverse)
 library(RColorBrewer)
+library(RSQLite)
+
+# It's assumed utils.R is in the same directory or its path is correctly specified.
+# If app3000ostaXAI.R and utils.R are in different locations due to permission issues,
+# ensure this source path is correct for the environment where app3000ostaXAI.R runs.
+# For example, if utils.R is in a temp folder: source("/path/to/temp_R_files/utils.R")
+# If they are in the same folder (e.g. after manually moving utils.R to 3000/)
+
+# The utils.R file is expected to be in the parent directory of the app's directory (e.g. CBR_survey/utils.R)
+# if the app is in CBR_survey/3000/
+if (file.exists("../utils.R")) {
+  source("../utils.R")
+} else if (file.exists("utils.R")) { # Fallback if utils.R is in the same directory as the app
+    source("utils.R")
+} else {
+  warning("utils.R not found. Please ensure it is correctly sourced. App functionality will be severely limited.")
+  # Define placeholder functions if utils.R is critical and not found, to avoid immediate crash
+  getAllRaces <- function(skate_id) { data.frame() }
+  getLaps <- function(link) { numeric() }
+  predict_pb <- function(...) { list(c(0,NA,rep(NA,8)), data.frame(), data.frame(), data.frame()) }
+}
 
 #setwd("C:/Users/mcwil/OneDrive/JADS_HumansData/Rondetijden")
-m3000<-read_csv("data/3kmn.csv") %>% filter(cat!="pup")
-pbs<-filter(m3000, pb)
-cb=inner_join(pbs,filter(m3000, !pb),  by="PersonID", suffix=c("_p", "_n"), relationship = "many-to-many")
+m3000_data_path <- "../data/3kmn.csv" # Corrected path
+m3000 <- if(file.exists(m3000_data_path)) {
+    read_csv(m3000_data_path) %>% filter(cat!="pup")
+} else {
+    warning(paste("Data file not found:", m3000_data_path, "App may not function correctly."))
+    data.frame() # Return empty dataframe if file not found
+}
+
+pbs <- if(nrow(m3000) > 0 && "pb" %in% names(m3000)) {
+    filter(m3000, pb)
+} else {
+    data.frame()
+}
+
+cb <- if(nrow(pbs) > 0 && nrow(m3000) > 0 && "PersonID" %in% names(pbs) && "PersonID" %in% names(m3000)) {
+    tryCatch({
+        inner_join(pbs, filter(m3000, !pb), by = "PersonID", suffix = c("_p", "_n"), relationship = "many-to-many")
+    }, error = function(e) {
+        warning(paste("Error creating case base 'cb':", e$message))
+        data.frame()
+    })
+} else {
+    data.frame()
+}
+
 candidates<-data.frame()
 
-getAllRaces<- function(skate_id)
-{
-  l<-paste0("https://www.osta.nl/index.php?pid=",skate_id,"&Seizoen=ALL&Afstand=&perAfstand=0&Verkort=1")
-  ar<-read_html(l)
-  allraces <-ar %>%  html_nodes(xpath="//div[@class='seizoen']")
-  s<-allraces %>% html_nodes(xpath="h2") %>% html_text()
-  season<-substr(s,1,4)
-  cat<-substr(s,11,100)
-  
-  racesL<-data.frame()
-  
-  for (i in 1:length(allraces))
-  {
-    r <-allraces[[i]] %>%  html_table()
-    if (nrow(r)==0) {next} # skip if no content for this season
-    names(r)<-c("date","track","distance","time", "note")
-    r<-filter(r,time!="")
-    links <-allraces[[i]] %>% html_nodes(xpath = "table/tr/td[4]/a") %>% html_attr("href")
-    r$season=season[i]
-    r$cat=cat[i]
-    r$id=skate_id
-    r$link=links
-    racesL<-rbind(racesL,r)
-  }
-    if (nrow(racesL)>0)
-      {
-      racesL<-filter(racesL, distance>300)
-      racesL$endtime<-HmsToSec(lapply(racesL$time, function(x) {ifelse(lengths(regmatches(x, gregexpr(":", x)))>0, paste("00:", x, sep=""),paste("00:00:", x, sep=""))}))
-      racesL$date<-strftime(as.POSIXct(racesL$date, format="%d-%m-%Y"))
-    }
-    return(racesL)
-}
-
-getLaps <- function(link)
-{
-  page<-read_html(paste0("https://www.osta.nl/",link))
-  times<-page %>% html_nodes(xpath="//*[@id='main']/table")%>%html_table() %>% data.frame()
-  #correct for laptimes larger than 60s 
-  times$Rondetijd<-HmsToSec(lapply(times$Rondetijd, function(x) {ifelse(lengths(regmatches(x, gregexpr(":", x)))>0, paste("00:", x, sep=""),paste("00:00:", x, sep=""))}))
-  laptimes<-times$Rondetijd*100
-  laptimes[1]<-as.numeric(as.character(times$Tussentijd[1]))*100
-  return(laptimes)
-}
-
-predict_pb <- function (q, cb, ft_range=500, age_range=5, adjust=FALSE, npb = TRUE, pb500 = FALSE, pb1000 = FALSE, pb1500=FALSE, sameTrack=FALSE, noCases=10)
-{
-  #get gender from query
-  q_gender=q$Gender_n;
-  q_track=q$Track_n;
-  # filter cases based on input vars
-  cases<-filter(cb, Gender_n==q_gender & PersonID!=q$PersonID)
-  if (age_range>0) {cases<-filter(cases, age_perf_p<q$age_perf_n+age_range & age_perf_p>q$age_perf_n-age_range)}
-  if (ft_range>0) {cases<-filter(cases, endtime_n<q$endtime_n+ft_range & endtime_n>q$endtime_n - ft_range)}
-  if (sameTrack) {cases<-filter(cases, Track_n==q_track)}
-  a<-ifelse(adjust, "^a", "^")
-  p500 <- ifelse(pb500, paste(a,"r_500_.?_n|",sep = ""), "")  
-  p1000 <- ifelse(pb1000, paste(a,"r_1000_.?_n|",sep = ""), "")  
-  p1500 <- ifelse(pb1500, paste(a,"r_1500_.?_n|",sep = ""), "")  
-  np <-ifelse(npb, paste(a,"r_.?_n|",sep = ""),"")
-  regStr = paste(p500, p1000, p1500, np, sep="")
-  regStr= substr(regStr, 1, nchar(regStr)-1)
-  #filter out duplicate cases (esp. for predictions with npb=F we have many )
-  # this does not cover duplicate cases if one skater has two similar races like the query case (when npb=true)
-  cases<-cases %>% select(matches(regStr), PersonID, matches(".*_p"),endtime_n,Track_n, -age_perf_n) %>% distinct()
-  #write.csv(cases, "test.csv")
-  nk=min(noCases, nrow(cases))
-  # generate y
-  if (adjust) {y=cases$aendtime_p} else {y=cases$endtime_p}
-  #generate X cases
-  X=select(cases,matches(regStr))
-  #generate prediction case
-  X.t = select(q,matches(regStr))
-  #predict endtime
-  knn=knn.reg(X,X.t,y ,k=nk)
-  if (adjust) {pred = trkcor[q$Track_p]*knn$pred} else {pred=knn$pred}
-  
-  # get indexes of similar cases for pace prediction
-  nni<-get.knnx(X,X.t,k=nk)
-  # retrieve their full case
-  nn <-cases %>% filter(row_number() %in% nni$nn.index )
-  #calculate relative paces of personal best for pace prediction
-  rel_paces = colMeans(select(nn,matches("^dr.?_p")))
-  #calculate absolute pace prediction
-  pred_pb_paces = rel_paces*(pred/7.5)
-  cases_p<-select(nn,matches("^r_.?_p"))
-  cases_n<-select(nn,matches(regStr),endtime_n,Track_n)
-  pb_short<-select(nn, endtime_500_p,trk_500_p, endtime_1000_p, trk_1000_p, endtime_1500_p, trk_1500_p)
-  #return prediction and similar cases
-  return(list(c(nk, pred, pred_pb_paces),cbind(select(nn, age_perf_p, Track_p,endtime_p),cases_p),cases_n, pb_short))
-  
-}
-
 #generate all track correction vectors
-trkcor<-unlist(select(filter(read_csv("data/trackcor.csv"),distance==3000),-distance))
-trkcor500<-unlist(select(filter(read_csv("data/trackcor.csv"),distance==500),-distance))
-trkcor1000<-unlist(select(filter(read_csv("data/trackcor.csv"),distance==1000),-distance))
-trkcor1500<-unlist(select(filter(read_csv("data/trackcor.csv"),distance==1500),-distance))
+trackcor_path <- "../data/trackcor.csv" # Corrected path for trackcor
+trkcor_base_data <- if(file.exists(trackcor_path)) {
+    read_csv(trackcor_path)
+} else {
+    warning(paste("Track correction file not found:", trackcor_path, "Track adjustments will not work."))
+    data.frame(distance=numeric(0)) # Return empty dataframe with distance column if file not found
+}
+
+trkcor<-unlist(select(filter(trkcor_base_data,distance==3000),-distance))
+trkcor500<-unlist(select(filter(trkcor_base_data,distance==500),-distance))
+trkcor1000<-unlist(select(filter(trkcor_base_data,distance==1000),-distance))
+trkcor1500<-unlist(select(filter(trkcor_base_data,distance==1500),-distance))
 
 m3000<-arrange(m3000,Name, cat, rank)
 lb<-c("1" = "0-25%", "2"= "26-50%", "3"="51-75%", "4"="76-100%")
@@ -158,7 +117,7 @@ ui <- fluidPage(
             fluidRow(column(6,
                             splitLayout(cellWidths = c("50%", "50%"),numericInput(inputId = "open_500", label = "opening (sec)",  min = 9, max=59, value=NULL, step = .1),
                                         numericInput(inputId = "r1_500", label = "r1 (sec)",  min =20, max=59, value=NULL, step=.1))),
-                        column(6,selectInput(inputId = "Track_500",label = "Baan 500m:", choices = names(trkcor)))), 
+                        column(6,selectInput(inputId = "Track_500",label = "Baan 500m:", choices = names(trkcor500)))), 
             fluidRow(column(12, selectInput(inputId = "sel500",label = "Kies tijd:", choices="")))),
             checkboxInput("m1000", "Gebruik 1000m", value=T),
             conditionalPanel(
@@ -169,7 +128,7 @@ ui <- fluidPage(
                         numericInput(inputId = "open_1000", label = "opening (sec)",  min = 14, max=59, value=NULL, step = .1),
                         numericInput(inputId = "r1_1000", label = "r1 (sec)",  min =20, max=59, value=NULL, step=.1),
                         numericInput(inputId = "r2_1000", label = "r2 (sec)", min =20, max=59, value=NULL, step = .1))),
-                        column(3,selectInput(inputId = "Track_1000",label = "Baan 1000m:",choices = names(trkcor)))), 
+                        column(3,selectInput(inputId = "Track_1000",label = "Baan 1000m:",choices = names(trkcor1000)))), 
             fluidRow(column(12,selectInput(inputId = "sel1000",label = "Kies tijd:", choices="")))
                 )),
               column(4, 
@@ -184,7 +143,7 @@ ui <- fluidPage(
                         numericInput(inputId = "r3_1500", label = "r3 (sec)", min =20, max=59, value=NULL, step = .1)),
             selectInput(inputId = "Track_1500",
                         label = "Baan 1500m:",
-                        choices = names(trkcor)),
+                        choices = names(trkcor1500)),
 			fluidRow(column(12,selectInput(inputId = "sel1500",label = "Kies tijd:", choices="")))
 			)),		
           column(4,
@@ -287,6 +246,28 @@ ui <- fluidPage(
 # Define server logic to summarize and view selected dataset ----
 server <- function(input, output,session) {
 
+# --- Database Setup for Logging Skater Selections ---
+db_path <- "../data/skater_activity.db" # Will be created in the app's working directory (e.g., 3000/)
+db <- dbConnect(RSQLite::SQLite(), db_path)
+
+# Create table if it doesn't exist
+if (!dbExistsTable(db, "skater_selection_log")) {
+  dbExecute(db, "CREATE TABLE skater_selection_log (
+                  log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  timestamp TEXT NOT NULL,
+                  shiny_session_token TEXT NOT NULL,
+                  selected_skater_id TEXT NOT NULL
+                )")
+  dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_timestamp ON skater_selection_log (timestamp)")
+  dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_skater_id ON skater_selection_log (selected_skater_id)")
+}
+# Disconnect when the session ends
+session$onSessionEnded(function() {
+  dbDisconnect(db)
+  print("Disconnected from skater_activity.db")
+})
+# --- End Database Setup ---
+
 #create data frame for scraped races
 races<-data.frame()
   
@@ -336,6 +317,24 @@ races<-data.frame()
     racesL$flag<-paste0(racesL$flag, ifelse(racesL$PB, " PB", ""))
     races<<-rbind(races,racesL)}
     }
+    
+    # --- ADDED: Log selected skater to database ---
+    if (!is.null(input$rb) && nzchar(input$rb)) { # Ensure input$rb is a valid, non-empty skater ID
+      current_time <- strftime(Sys.time(), "%Y-%m-%d %H:%M:%S")
+      session_token <- session$token # Unique token for the current Shiny session
+      skater_id_to_log <- input$rb
+      
+      tryCatch({
+        dbExecute(db, 
+                  "INSERT INTO skater_selection_log (timestamp, shiny_session_token, selected_skater_id) VALUES (?, ?, ?)", 
+                  params = list(current_time, session_token, skater_id_to_log)
+        )
+        print(paste("Logged skater:", skater_id_to_log, "Session:", substr(session_token,1,6), "at", current_time))
+      }, error = function(e) {
+        warning(paste("Failed to log skater selection to database:", e$message))
+      })
+    }
+    # --- END: Log selected skater to database ---
     
     if (nrow(filter(races, id==input$rb))>0)
     {
@@ -596,10 +595,10 @@ races<-data.frame()
     
     #use finish time and age range filtering if required
     if (!input$m3000) {updateCheckboxInput(session, "ft_r", value=F)}
-    ft<-ifelse(input$ft_r & input$m3000, input$ftrange*100, 0)
-    ap<-ifelse(input$age_r, input$agerange, 0)
-    
-    fullpred<-predict_pb(q,cb, ft_range=ft, age_range=ap, npb=input$m3000, pb500=input$m500, pb1000=input$m1000, pb1500 = input$m1500, adjust=input$adjust)
+    ft_param_for_predict_pb<-ifelse(input$ft_r & input$m3000, input$ftrange*100, 0)
+    ap_param_for_predict_pb<-ifelse(input$age_r, input$agerange, 0)
+
+    fullpred<-predict_pb(q,cb, ft_range=ft_param_for_predict_pb, age_range=ap_param_for_predict_pb, npb=input$m3000, pb500=input$m500, pb1000=input$m1000, pb1500 = input$m1500, adjust=input$adjust)
     pred<-fullpred[[1]]
     
     endtime<-substr(SecToHms(endtime/100, digit=2),4,12)

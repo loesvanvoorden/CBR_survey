@@ -101,24 +101,26 @@ getLaps <- function(link)
 # --- Track Correction Data Loading ---
 # It's good practice to load data needed by functions within this util script,
 # or ensure they are passed as arguments.
-trkcor <- NULL
-trkcor500 <- NULL
-trkcor1000 <- NULL
-trkcor1500 <- NULL
-
-if (file.exists("3000/data/trackcor.csv")) {
-  trkcor_data <- readr::read_csv("3000/data/trackcor.csv", show_col_types = FALSE)
-  if (nrow(trkcor_data) > 0 && "distance" %in% names(trkcor_data)) {
-    trkcor     <- dplyr::select(dplyr::filter(trkcor_data, distance == 3000), -distance) %>% unlist()
-    trkcor500  <- dplyr::select(dplyr::filter(trkcor_data, distance == 500),  -distance) %>% unlist()
-    trkcor1000 <- dplyr::select(dplyr::filter(trkcor_data, distance == 1000), -distance) %>% unlist()
-    trkcor1500 <- dplyr::select(dplyr::filter(trkcor_data, distance == 1500), -distance) %>% unlist()
-  } else {
-    warning("trackcor.csv is empty or does not contain a 'distance' column.")
-  }
-} else {
-  warning("trackcor.csv not found in 3000/data/ directory. Track corrections will not work or might use global variables if available elsewhere.")
-}
+# The trkcor variables are now loaded in app3000ostaXAI.R and will be available
+# in the global environment when this script is sourced.
+# trkcor <- NULL
+# trkcor500 <- NULL
+# trkcor1000 <- NULL
+# trkcor1500 <- NULL
+# 
+# if (file.exists("3000/data/trackcor.csv")) {
+#   trkcor_data <- readr::read_csv("3000/data/trackcor.csv", show_col_types = FALSE)
+#   if (nrow(trkcor_data) > 0 && "distance" %in% names(trkcor_data)) {
+#     trkcor     <- dplyr::select(dplyr::filter(trkcor_data, distance == 3000), -distance) %>% unlist()
+#     trkcor500  <- dplyr::select(dplyr::filter(trkcor_data, distance == 500),  -distance) %>% unlist()
+#     trkcor1000 <- dplyr::select(dplyr::filter(trkcor_data, distance == 1000), -distance) %>% unlist()
+#     trkcor1500 <- dplyr::select(dplyr::filter(trkcor_data, distance == 1500), -distance) %>% unlist()
+#   } else {
+#     warning("trackcor.csv is empty or does not contain a 'distance' column.")
+#   }
+# } else {
+#   warning("trackcor.csv not found in 3000/data/ directory. Track corrections will not work or might use global variables if available elsewhere.")
+# }
 # --- End Track Correction Data Loading ---
 
 
@@ -159,6 +161,11 @@ predict_pb <- function (q, cb, ft_range=500, age_range=5, adjust=FALSE, npb = TR
   
   regStr = paste(regStr_parts, collapse="")
   regStr = substr(regStr, 1, nchar(regStr)-1) # Remove trailing |
+  print(paste("Generated regStr:", regStr))
+  print("Column names in 'cases' before selecting by regStr:")
+  print(names(cases)) # 'cases' is cb after initial gender/PersonID filter
+  print("Column names in 'q' (query):")
+  print(names(q))
 
   # Ensure necessary columns exist before select_matches
   required_cols_pattern = regStr
@@ -166,7 +173,11 @@ predict_pb <- function (q, cb, ft_range=500, age_range=5, adjust=FALSE, npb = TR
   
   # Check if 'cases' has columns matching regStr and other required columns
   # This is a simplified check; robust checking would parse regStr
-  if(nrow(cases) == 0 || !any(grepl(gsub("\\^|\\.\\?","" , regStr), names(cases)))) {
+  # Original problematic check:
+  # if(nrow(cases) == 0 || !any(grepl(gsub("\\^|\\.\?","" , regStr), names(cases)))) {
+  # Let's test column selection more directly
+  potential_selection <- try(select(cases, matches(regStr)), silent = TRUE)
+  if(nrow(cases) == 0 || inherits(potential_selection, "try-error") || ncol(potential_selection) == 0) {
       warning("No cases match initial filters or no relevant data columns for KNN based on regStr.")
       empty_paces <- setNames(rep(NA_real_, 8), paste0("r", 0:7))
       return(list(c(0, NA_real_, empty_paces), data.frame(), data.frame(), data.frame()))
